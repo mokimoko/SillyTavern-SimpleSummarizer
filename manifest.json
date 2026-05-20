@@ -1,0 +1,13 @@
+{
+  "display_name": "Summarizer",
+  "loading_order": 1,
+  "generate_interceptor": "summarizer_intercept_messages",
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "nrahis",
+  "version": "1.0.0",
+  "homePage": "https://github.com/nrahis/SillyTavern-Summarizer",
+  "auto_update": false
+}
