@@ -1,0 +1,683 @@
+/* ============================================================
+ * SillyTavern-Summarizer — Standalone Styles
+ * Theme-aware — uses ST CSS variables only, no hardcoded colors
+ * ============================================================ */
+
+/* --- Batch summary indicators (in-chat) --- */
+
+.batch-summary-indicator {
+    margin-top: 6px;
+    padding: 8px 12px;
+    border-left: 2px solid color-mix(in srgb, var(--SmartThemeBorderColor) 50%, transparent);
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 30%, transparent);
+    border-radius: 0 4px 4px 0;
+    font-size: 0.85em;
+    opacity: 0.85;
+    transition: opacity 0.2s, border-color 0.15s;
+}
+
+.batch-summary-indicator:hover {
+    opacity: 1;
+}
+
+.batch-summary-indicator.batch-injected {
+    border-left-color: var(--SmartThemeQuoteColor);
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor) 5%, transparent);
+}
+
+.batch-summary-indicator.batch-dirty {
+    border-left-color: var(--SmartThemeEmColor);
+    background: color-mix(in srgb, var(--SmartThemeEmColor) 4%, transparent);
+    opacity: 0.7;
+}
+
+.batch-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 3px;
+}
+
+.batch-label {
+    font-weight: 600;
+    font-size: 0.8em;
+    display: flex;
+    align-items: center;
+    gap: 0.35em;
+    flex-wrap: wrap;
+    opacity: 0.55;
+    color: var(--SmartThemeBodyColor);
+}
+
+.batch-summary-text {
+    font-size: 0.85em;
+    line-height: 1.4;
+    color: var(--SmartThemeBodyColor);
+    opacity: 0.5;
+    white-space: pre-wrap;
+    font-style: italic;
+}
+
+.batch-injected .batch-summary-text {
+    color: var(--SmartThemeQuoteColor);
+    opacity: 0.7;
+}
+
+.batch-dirty .batch-summary-text {
+    color: var(--SmartThemeEmColor);
+    opacity: 0.6;
+}
+
+.batch-actions {
+    display: flex;
+    gap: 2px;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+
+.batch-summary-indicator:hover .batch-actions {
+    opacity: 1;
+}
+
+.batch-btn {
+    background: transparent;
+    border: 1px solid transparent;
+    cursor: pointer;
+    padding: 2px 5px;
+    border-radius: 3px;
+    color: var(--SmartThemeBodyColor);
+    opacity: 0.4;
+    font-size: 0.82em;
+    transition: all 0.15s;
+}
+
+.batch-btn:hover {
+    background: color-mix(in srgb, var(--SmartThemeBodyColor) 8%, transparent);
+    opacity: 0.8;
+}
+
+.batch-quote-count {
+    font-size: 0.75em;
+    opacity: 0.55;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 1px 6px;
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor) 6%, transparent);
+    border: 1px solid color-mix(in srgb, var(--SmartThemeQuoteColor) 12%, transparent);
+    border-radius: 8px;
+    color: var(--SmartThemeQuoteColor);
+}
+
+.batch-status-dirty,
+.batch-status-edited,
+.batch-status-injected {
+    font-size: 0.85em;
+}
+
+.batch-status-dirty { color: var(--SmartThemeEmColor); }
+.batch-status-edited { color: var(--SmartThemeEmColor); }
+.batch-status-injected { color: var(--SmartThemeQuoteColor); }
+
+
+/* --- Modal overlay --- */
+
+.summarizer-modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.45);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+    padding: 2em;
+}
+
+.summarizer-modal {
+    background: var(--SmartThemeBlurTintColor);
+    border: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor) 50%, transparent);
+    border-radius: 10px;
+    width: min(90vw, 580px);
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(12px);
+    color: var(--SmartThemeBodyColor);
+    font-family: inherit;
+}
+
+.summarizer-modal-large {
+    width: min(92vw, 900px);
+}
+
+/* --- Two-column comprehensive layout --- */
+
+.summarizer-comp-columns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    min-height: 0;
+    flex: 1;
+}
+
+.summarizer-comp-left {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 0;
+}
+
+.summarizer-comp-left textarea {
+    flex: 1;
+    min-height: 200px;
+}
+
+.summarizer-comp-right {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 0;
+}
+
+.summarizer-comp-right #summarizer-comprehensive-quotes-container {
+    flex: 1;
+    max-height: none;
+    overflow-y: auto;
+}
+
+@media (max-width: 700px) {
+    .summarizer-comp-columns {
+        grid-template-columns: 1fr;
+    }
+}
+
+.summarizer-modal-header {
+    padding: 12px 18px;
+    border-bottom: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor) 30%, transparent);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.summarizer-modal-header h3 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--SmartThemeBodyColor);
+}
+
+.summarizer-modal-close {
+    background: none;
+    border: none;
+    font-size: 16px;
+    cursor: pointer;
+    color: var(--SmartThemeBodyColor);
+    opacity: 0.35;
+    padding: 2px 6px;
+    border-radius: 4px;
+    line-height: 1;
+    transition: all 0.15s;
+}
+
+.summarizer-modal-close:hover {
+    opacity: 0.7;
+    background: color-mix(in srgb, var(--SmartThemeBodyColor) 6%, transparent);
+}
+
+.summarizer-modal-body {
+    padding: 14px 18px;
+    overflow-y: auto;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.summarizer-modal-body .notes {
+    display: block;
+    font-size: 11px;
+    color: var(--SmartThemeBodyColor);
+    opacity: 0.4;
+    margin: 0;
+}
+
+.summarizer-modal-body label {
+    display: block;
+    margin: 0;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--SmartThemeBodyColor);
+    opacity: 0.65;
+}
+
+.summarizer-modal-body label strong {
+    font-weight: 600;
+}
+
+.summarizer-modal-body textarea {
+    width: 100%;
+    resize: vertical;
+    min-height: 140px;
+    padding: 8px 10px;
+    font-family: inherit;
+    font-size: 0.84em;
+    line-height: 1.6;
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 60%, black);
+    border: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor) 30%, transparent);
+    border-radius: 6px;
+    color: var(--SmartThemeBodyColor);
+    transition: border-color 0.15s;
+}
+
+.summarizer-modal-body textarea:focus {
+    outline: none;
+    border-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 35%, transparent);
+}
+
+.summarizer-modal-body textarea::placeholder {
+    color: var(--SmartThemeBodyColor);
+    opacity: 0.25;
+}
+
+#summarizer-comprehensive-textarea {
+    min-height: 240px;
+}
+
+.summarizer-modal-footer {
+    padding: 8px 18px;
+    border-top: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor) 30%, transparent);
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+/* Footer buttons — override .menu_button */
+.summarizer-modal-footer .menu_button {
+    padding: 5px 12px;
+    border-radius: 5px;
+    border: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor) 30%, transparent);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    transition: all 0.15s;
+    font-family: inherit;
+    background: color-mix(in srgb, var(--SmartThemeBodyColor) 4%, transparent);
+    color: var(--SmartThemeBodyColor);
+    opacity: 0.55;
+    white-space: nowrap;
+}
+
+.summarizer-modal-footer .menu_button:hover {
+    background: color-mix(in srgb, var(--SmartThemeBodyColor) 8%, transparent);
+    opacity: 0.85;
+}
+
+/* Save — subtle accent */
+.summarizer-modal-footer .summarizer-modal-save {
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor) 10%, transparent);
+    color: var(--SmartThemeQuoteColor);
+    border-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 20%, transparent);
+    opacity: 0.85;
+}
+
+.summarizer-modal-footer .summarizer-modal-save:hover {
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor) 18%, transparent);
+    opacity: 1;
+}
+
+/* Regenerate — subtle */
+.summarizer-modal-footer .summarizer-comprehensive-regenerate {
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor) 5%, transparent);
+    color: var(--SmartThemeQuoteColor);
+    border-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 12%, transparent);
+    opacity: 0.6;
+}
+
+.summarizer-modal-footer .summarizer-comprehensive-regenerate:hover {
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor) 12%, transparent);
+    opacity: 0.85;
+}
+
+/* Delete — subtle danger via em color */
+.summarizer-modal-footer .summarizer-comprehensive-delete {
+    background: color-mix(in srgb, var(--SmartThemeEmColor) 5%, transparent);
+    color: var(--SmartThemeEmColor);
+    border-color: color-mix(in srgb, var(--SmartThemeEmColor) 12%, transparent);
+    opacity: 0.6;
+}
+
+.summarizer-modal-footer .summarizer-comprehensive-delete:hover {
+    background: color-mix(in srgb, var(--SmartThemeEmColor) 12%, transparent);
+    opacity: 0.85;
+}
+
+
+/* --- Quote items --- */
+
+#summarizer-quotes-container,
+#summarizer-comprehensive-quotes-container {
+    max-height: 420px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.summarizer-quote-item {
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 40%, black);
+    border: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor) 18%, transparent);
+    border-radius: 6px;
+    padding: 7px 10px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    grid-template-rows: auto auto auto;
+    gap: 4px 6px;
+    transition: border-color 0.15s;
+}
+
+.summarizer-quote-item:hover {
+    border-color: color-mix(in srgb, var(--SmartThemeBorderColor) 30%, transparent);
+}
+
+.summarizer-quote-item input,
+.summarizer-quote-item textarea {
+    width: 100%;
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 50%, black);
+    border: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor) 18%, transparent);
+    border-radius: 4px;
+    color: var(--SmartThemeBodyColor);
+    padding: 4px 7px;
+    font-size: 0.82em;
+    font-family: inherit;
+    transition: border-color 0.15s;
+}
+
+.summarizer-quote-item input:focus,
+.summarizer-quote-item textarea:focus {
+    outline: none;
+    border-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 30%, transparent);
+}
+
+.summarizer-quote-item input::placeholder,
+.summarizer-quote-item textarea::placeholder {
+    color: var(--SmartThemeBodyColor);
+    opacity: 0.2;
+}
+
+/* Speaker — top left */
+.summarizer-quote-speaker {
+    font-weight: 600;
+    grid-column: 1;
+    grid-row: 1;
+}
+
+/* Delete — top right */
+.summarizer-quote-delete,
+.summarizer-quote-delete.menu_button {
+    grid-column: 2;
+    grid-row: 1;
+    align-self: center;
+    justify-self: end;
+    background: none;
+    border: none;
+    color: var(--SmartThemeBodyColor);
+    opacity: 0;
+    cursor: pointer;
+    padding: 2px 5px;
+    border-radius: 3px;
+    font-size: 11px;
+    min-width: auto;
+    transition: all 0.15s;
+}
+
+.summarizer-quote-item:hover .summarizer-quote-delete {
+    opacity: 0.3;
+}
+
+.summarizer-quote-delete:hover,
+.summarizer-quote-delete.menu_button:hover {
+    color: var(--SmartThemeEmColor);
+    background: color-mix(in srgb, var(--SmartThemeEmColor) 8%, transparent);
+    opacity: 0.8 !important;
+}
+
+/* Quote text — full width row 2 */
+.summarizer-quote-text {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    min-height: 32px !important;
+    max-height: 70px;
+    resize: vertical;
+    font-style: italic;
+    line-height: 1.4;
+}
+
+/* Context — full width row 3 */
+.summarizer-quote-context {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    font-size: 0.78em !important;
+    opacity: 0.55;
+}
+
+.summarizer-empty-quotes {
+    font-style: italic;
+    opacity: 0.35;
+    text-align: center;
+    padding: 14px;
+    font-size: 12px;
+    color: var(--SmartThemeBodyColor);
+    margin: 0;
+}
+
+/* Add quote button — pull closer to container, push away from footer */
+.summarizer-add-quote-btn,
+#summarizer-add-quote,
+#summarizer-comprehensive-add-quote {
+    width: 100%;
+    text-align: center;
+    justify-content: center;
+    padding: 5px 12px;
+    border-radius: 5px;
+    border: 1px dashed color-mix(in srgb, var(--SmartThemeBorderColor) 22%, transparent);
+    background: transparent;
+    color: var(--SmartThemeBodyColor);
+    opacity: 0.3;
+    font-size: 11.5px;
+    font-weight: 500;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    transition: all 0.15s;
+    font-family: inherit;
+    margin-top: -4px;  /* cancel most of body gap — stays visually attached to the container */
+    margin-bottom: 2px;
+}
+
+#summarizer-add-quote:hover,
+#summarizer-comprehensive-add-quote:hover {
+    background: color-mix(in srgb, var(--SmartThemeBodyColor) 3%, transparent);
+    border-color: color-mix(in srgb, var(--SmartThemeBorderColor) 35%, transparent);
+    opacity: 0.55;
+}
+
+@media (max-width: 600px) {
+    .summarizer-quote-item {
+        grid-template-columns: 1fr;
+    }
+    .summarizer-quote-delete {
+        grid-column: 1;
+        justify-self: end;
+        opacity: 0.3;
+    }
+    .summarizer-quote-text { grid-column: 1; }
+    .summarizer-quote-context { grid-column: 1; }
+}
+
+
+/* --- Progress dialog --- */
+
+.summarizer-progress-modal {
+    width: min(90vw, 360px);
+}
+
+.summarizer-progress-title {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--SmartThemeBodyColor);
+}
+
+.summarizer-progress-title i {
+    color: var(--SmartThemeQuoteColor);
+    opacity: 0.75;
+}
+
+.summarizer-progress-body {
+    padding: 18px 22px !important;
+}
+
+.summarizer-progress-status {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 10px;
+    font-size: 12px;
+}
+
+.summarizer-progress-text {
+    color: var(--SmartThemeBodyColor);
+    opacity: 0.45;
+}
+
+.summarizer-progress-count {
+    color: var(--SmartThemeQuoteColor);
+    opacity: 0.7;
+    font-weight: 600;
+    font-size: 11px;
+}
+
+.summarizer-progress-track {
+    width: 100%;
+    height: 2px;
+    background: color-mix(in srgb, var(--SmartThemeBodyColor) 7%, transparent);
+    border-radius: 1px;
+    overflow: hidden;
+}
+
+.summarizer-progress-fill {
+    height: 100%;
+    background: var(--SmartThemeQuoteColor);
+    border-radius: 1px;
+    transition: width 0.3s ease;
+    width: 0%;
+}
+
+.summarizer-progress-fill.summarizer-indeterminate {
+    width: 30%;
+    animation: summarizer-indeterminate 1.5s ease-in-out infinite;
+}
+
+@keyframes summarizer-indeterminate {
+    0%   { transform: translateX(-100%); }
+    100% { transform: translateX(400%); }
+}
+
+.summarizer-progress-cancel {
+    background: transparent;
+    border: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor) 30%, transparent);
+    border-radius: 5px;
+    padding: 5px 12px;
+    cursor: pointer;
+    color: var(--SmartThemeBodyColor);
+    opacity: 0.45;
+    font-size: 12px;
+    font-family: inherit;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    transition: all 0.15s;
+}
+
+.summarizer-progress-cancel:hover {
+    background: color-mix(in srgb, var(--SmartThemeBodyColor) 6%, transparent);
+    opacity: 0.7;
+}
+
+
+/* --- Drawer settings overrides --- */
+
+#extensions_settings2 .inline-drawer-content label {
+    margin-top: 0.5em;
+}
+
+#extensions_settings2 .inline-drawer-content small {
+    display: block;
+    opacity: 0.5;
+    font-size: 0.8em;
+    margin-bottom: 0.5em;
+}
+
+#extensions_settings2 .inline-drawer-content hr {
+    margin: 0.75em 0;
+    border-color: var(--SmartThemeBorderColor);
+    opacity: 0.2;
+}
+
+#extensions_settings2 .inline-drawer-content h4 {
+    margin: 0 0 0.25em 0;
+    font-size: 0.95em;
+    display: flex;
+    align-items: center;
+    gap: 0.4em;
+}
+
+
+/* --- Scrollbar --- */
+
+#summarizer-quotes-container::-webkit-scrollbar,
+#summarizer-comprehensive-quotes-container::-webkit-scrollbar,
+.summarizer-modal-body::-webkit-scrollbar {
+    width: 4px;
+}
+
+#summarizer-quotes-container::-webkit-scrollbar-track,
+#summarizer-comprehensive-quotes-container::-webkit-scrollbar-track,
+.summarizer-modal-body::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+#summarizer-quotes-container::-webkit-scrollbar-thumb,
+#summarizer-comprehensive-quotes-container::-webkit-scrollbar-thumb,
+.summarizer-modal-body::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--SmartThemeBodyColor) 8%, transparent);
+    border-radius: 2px;
+}
+
+#summarizer-quotes-container::-webkit-scrollbar-thumb:hover,
+#summarizer-comprehensive-quotes-container::-webkit-scrollbar-thumb:hover,
+.summarizer-modal-body::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in srgb, var(--SmartThemeBodyColor) 15%, transparent);
+}
+
+
+/* --- Responsive --- */
+
+@media (max-width: 768px) {
+    .summarizer-modal-overlay { padding: 1em; }
+    .summarizer-modal { max-width: 100%; max-height: 90vh; }
+    .summarizer-modal-header, .summarizer-modal-footer { padding: 10px 14px; }
+    .summarizer-modal-body { padding: 12px 14px; }
+    .batch-summary-indicator { font-size: 0.8em; padding: 6px 8px; }
+    .batch-actions { opacity: 1; }
+}
