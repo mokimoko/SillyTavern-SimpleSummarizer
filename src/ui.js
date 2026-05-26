@@ -122,7 +122,7 @@ function attachBatchEventHandlers() {
 // Edit Batch Dialog
 // ============================================================
 
-export async function showEditBatchDialog(batchId) {
+export async function showEditBatchDialog(batchId, onSave) {
     const batches = getBatches();
     const batch = batches.find(b => b.id === batchId);
     if (!batch) return;
@@ -157,6 +157,7 @@ export async function showEditBatchDialog(batchId) {
         if (newSummary) {
             updateBatch(batchId, { summary: newSummary, quotes: newQuotes, edited: true, dirty: false });
             updateBatchVisuals();
+            onSave?.();
             toastr.success('Batch summary updated');
         }
         overlay.remove();

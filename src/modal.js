@@ -234,8 +234,9 @@ function renderBatchCard(batch, index) {
 
 function wireBatchesEvents(container) {
     // Process All
-    container.querySelector('#ss-process-all')?.addEventListener('click', () => {
-        getContext().executeSlashCommandsWithOptions('/summarizer-process');
+    container.querySelector('#ss-process-all')?.addEventListener('click', async () => {
+        await getContext().executeSlashCommandsWithOptions('/summarizer-process');
+        renderContent();
     });
 
     // Clear All
@@ -303,7 +304,7 @@ function wireBatchesEvents(container) {
 
         // Click card body → open edit dialog
         const { showEditBatchDialog } = await import('./ui.js');
-        showEditBatchDialog(batchId);
+        showEditBatchDialog(batchId, renderContent);
     });
 }
 
@@ -602,7 +603,7 @@ function wirePinnedEvents(container) {
 
         // Click anywhere else on the item → open batch editor
         const { showEditBatchDialog } = await import('./ui.js');
-        showEditBatchDialog(batchId);
+        showEditBatchDialog(batchId, renderContent);
     });
 }
 
