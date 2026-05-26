@@ -14,6 +14,7 @@ import {
     getBatches,
     getBatchesToInject,
     incrementRotationOffset,
+    getPinnedQuotes,
 } from './storage.js';
 import {
     buildContextArchivesContent,
@@ -46,7 +47,10 @@ function getContentSignature() {
     const context = getContext();
     const chat = context.chat;
     const batches = getBatches();
-    const batchSig = batches.map(b => `${b.id}:${b.dirty}:${b.summary?.length || 0}`).join('|');
+    const batchSig = batches.map(b => {
+        const pinnedCount = b.quotes?.filter(q => q.pinned)?.length || 0;
+        return `${b.id}:${b.dirty}:${b.summary?.length || 0}:p${pinnedCount}`;
+    }).join('|');
     return `${chat?.length || 0}:${batchSig}:${getSetting('maxSummariesInContext')}:${getSetting('alwaysKeepFirstNBatches')}:${getSetting('alwaysKeepLastNBatches')}`;
 }
 
@@ -102,7 +106,19 @@ function buildPromptContent() {
         return text;
     });
 
-    const content = `<prior_events>\n${preamble}\n\n${summaryLines.join('\n\n')}\n</prior_events>`;
+    // Collect pinned quotes across all batches
+    const pinnedQuotes = getPinnedQuotes();
+    let pinnedSection = '';
+    if (pinnedQuotes.length > 0) {
+        const pinnedLines = pinnedQuotes.map(q => {
+            let line = `  ${q.speaker}: "${q.text}"`;
+            if (q.context?.trim()) line += ` (${q.context})`;
+            return line;
+        }).join('\n');
+        pinnedSection = `\n\nKey Moments (user-pinned):\n${pinnedLines}`;
+    }
+
+    const content = `<priorEvents>\n${preamble}\n\n${summaryLines.join('\n\n')}${pinnedSection}\n</priorEvents>`;
 
     lastContentSignature = sig;
     lastContentResult = content;

@@ -18,6 +18,7 @@ import {
     updateComprehensiveSummary,
     getDynamicComprehensiveLength,
     getCurrentChatMetadata,
+    getPinnedQuotes,
 } from './storage.js';
 
 /**
@@ -54,50 +55,6 @@ function buildQuoteAttribution(otherSpeakers) {
 }
 
 /**
- * Build the history summary prompt for past events from ScenarioCrafter
- */
-function buildHistoryPrompt(pastHistoryContent) {
-    const contentMatch = pastHistoryContent.match(/<past_history>([\s\S]*?)<\/past_history>/);
-    const content = contentMatch ? contentMatch[1].trim() : pastHistoryContent;
-
-    const wordCount = content.split(/\s+/).length;
-    let targetLength;
-
-    if (wordCount < 500) {
-        targetLength = '1-2 paragraphs (300-400 words)';
-    } else if (wordCount < 1500) {
-        targetLength = '2-3 paragraphs (400-500 words)';
-    } else {
-        targetLength = '3-4 paragraphs (500-600 words)';
-    }
-
-    return `You are a summarization assistant. Your task is to create a CONCISE HISTORY summary of events that occurred BEFORE the current story.
-
-This is a special summary of PAST EVENTS that will provide context for a new story/chat. Your summary should:
-- Capture the essential plot progression and character development from the past
-- Focus on events, decisions, and consequences that might be relevant going forward
-- Maintain chronological order
-- Be thorough but concise - this is background context, not the main story
-
-Length requirement: ${targetLength}
-
-Past events to summarize:
-${content}
-
-Format your response EXACTLY as follows:
-
-<summary>
-Your concise summary of past events here
-</summary>
-
-<quotes>
-none
-</quotes>
-
-IMPORTANT: Do not include quotes for history summaries - just output "none" in the quotes section.`;
-}
-
-/**
  * Build the establishment summary prompt (first batch)
  */
 function buildEstablishmentPrompt(messages, otherSpeakers = []) {
@@ -110,17 +67,21 @@ function buildEstablishmentPrompt(messages, otherSpeakers = []) {
 
     const quoteAttribution = buildQuoteAttribution(otherSpeakers);
 
-    return `You are a summarization assistant. Your task is to create an ESTABLISHMENT summary for the beginning of a story/roleplay.
+    return `You are a fact extractor for an ongoing roleplay. Your task is to record the key facts established in the opening messages of a story.
 
-This is the FIRST batch of messages. Your summary should establish:
-- The setting and context
-- Main characters introduced
-- The initial situation/premise
-- The overall tone
+This is the FIRST batch. Think through these dimensions when extracting:
+1. Setting — where are they? What does the place look like? What time is it, what's the weather, what's on the shelves? Concrete physical details that ground the scene.
+2. Characters — who's here? What do they look like, what are they wearing, what can they do? What's their deal — their job, their background, their personality as shown through action?
+3. Situation — what's actually happening right now? How did they get here? What's the problem or premise that kicked this off?
+4. Relationships — who are these people to each other? How are they treating each other? Is someone in charge, is someone uncomfortable, is someone lying?
+5. World-building — how does this world work? Is there magic, technology, hidden societies, rules about what's possible? Only include what's actually been established, not implications.
+
+Output a single dense block of factual prose. No labels, no headers, no bullet points — just fact after fact, grouped in the natural order above. Each sentence should state a distinct fact. Do not narrate, dramatize, or editorialize. If a dimension has nothing notable, skip it entirely.
 
 Additionally, if you notice any particularly MEMORABLE or QUOTABLE lines (emotional peaks, character-defining moments, witty dialogue, dramatic reveals), extract them. Only include quotes that would be memorable if this were a book or movie. Include 0-3 quotes maximum - don't force it.
 
 Length requirement: ${length}
+If fewer meaningful facts exist, write fewer sentences. Never pad or invent details to fill the target length.
 
 Messages to summarize:
 ${messagesText}
@@ -167,13 +128,23 @@ function buildBatchPrompt(messages, batchIndex, previousSummaries, otherSpeakers
 
     const quoteAttribution = buildQuoteAttribution(otherSpeakers);
 
-    return `You are a summarization assistant. Your task is to create a CONTINUATION summary for batch ${batchIndex + 1} of an ongoing story/roleplay.
+    return `You are a fact extractor for an ongoing roleplay. Your task is to record the key facts and developments from batch ${batchIndex + 1}.
 
-${contextText}Now summarize the NEW events in the messages below. DO NOT repeat information from previous summaries - focus ONLY on what happens in these new messages.
+${contextText}Record ONLY new facts from the messages below. Do not repeat anything from previous context.
+
+Think through these dimensions when extracting:
+1. Setting — did they go somewhere new? Did the environment change? New time of day, new location, new details about the space?
+2. Characters — did we learn something new about someone? New physical details, abilities, backstory, personality traits that weren't obvious before?
+3. Situation — what actually happened in these messages? What did people do, what did they decide, what went wrong or right? What information came to light?
+4. Relationships — did the way these people treat each other change? Did someone open up, shut down, betray someone, help someone? Are they closer or further apart than before, and why?
+5. World-building — did we learn new rules about how this world works? New lore, new factions, new limitations on what's possible?
+
+Output a single dense block of factual prose. No labels, no headers, no bullet points — just fact after fact, grouped in the natural order above. Each sentence should state a distinct fact. Do not narrate, dramatize, or pad with filler. If nothing changed in a dimension, skip it entirely.
 
 Additionally, if you notice any particularly MEMORABLE or QUOTABLE lines (emotional peaks, character-defining moments, witty dialogue, dramatic reveals), extract them. Only include quotes that would be memorable if this were a book or movie. Include 0-3 quotes maximum - don't force it.
 
 Length requirement: ${length}
+If fewer meaningful facts exist, write fewer sentences. Never pad or invent details to fill the target length.
 
 Messages to summarize:
 ${messagesText}
@@ -200,9 +171,8 @@ none
 /**
  * Build the comprehensive summary prompt
  */
-function buildComprehensivePrompt(batches, firstMessages, trailingMessages, otherSpeakers = []) {
+function buildComprehensivePrompt(batches, firstMessages, trailingMessages, otherSpeakers = [], pinnedQuotes = []) {
     const length = getDynamicComprehensiveLength();
-    const hasHistoryBatch = batches.some(b => b.type === 'history');
 
     let firstMessagesText = '';
     if (firstMessages && firstMessages.length > 0) {
@@ -215,9 +185,7 @@ function buildComprehensivePrompt(batches, firstMessages, trailingMessages, othe
     }
 
     let batchSummaries = batches.map((batch, i) => {
-        let label = '';
-        if (batch.type === 'history') label = '(PAST HISTORY - for context only)';
-        else if (batch.type === 'establishment') label = '(SETUP)';
+        const label = batch.type === 'establishment' ? '(SETUP)' : '';
         return `Batch ${i + 1} ${label}:\n${batch.summary}`;
     }).join('\n\n');
 
@@ -249,41 +217,49 @@ function buildComprehensivePrompt(batches, firstMessages, trailingMessages, othe
 
     const quoteAttribution = buildQuoteAttribution(otherSpeakers);
 
-    let historyInstruction = '';
-    if (hasHistoryBatch) {
-        historyInstruction = `\n\nIMPORTANT - PAST HISTORY HANDLING:
-Batch 1 contains "PAST HISTORY" - events that occurred BEFORE the current story. This is provided for context only. In your comprehensive summary:
-- DO NOT fully recap the past history
-- Reference past events ONLY when they directly connect to or explain current story developments
-- Focus your summary on the CURRENT story (batches marked as SETUP and regular batches)
-- You may briefly mention past context when it's essential for understanding character motivations or plot continuity`;
+    // Adjust auto-pick count based on pinned quotes
+    const autoPickCount = Math.max(0, 8 - pinnedQuotes.length);
+
+    let pinnedQuotesSection = '';
+    if (pinnedQuotes.length > 0) {
+        pinnedQuotesSection = '\n\nPINNED QUOTES (user-selected — ALWAYS include these exactly as written):\n';
+        pinnedQuotes.forEach(q => {
+            pinnedQuotesSection += `${q.speaker}: "${q.text}"${q.context ? ` (${q.context})` : ''}\n`;
+        });
     }
 
-    return `You are a summarization assistant. Your task is to produce a COMPREHENSIVE, CHRONOLOGICAL summary of a long-form story or roleplay.
+    let quoteSelectionInstruction;
+    if (pinnedQuotes.length === 0) {
+        quoteSelectionInstruction = `Select exactly 8 quotes (or fewer if there aren't 8 good ones available). Do not make up quotes - only use quotes from the batch quotes provided above.`;
+    } else if (autoPickCount > 0) {
+        quoteSelectionInstruction = `The user has pinned ${pinnedQuotes.length} quote(s) listed above — ALWAYS include those exactly as written. Then select up to ${autoPickCount} additional quotes from the batch quotes to reach a total of 8. Do not make up quotes.`;
+    } else {
+        quoteSelectionInstruction = `The user has pinned ${pinnedQuotes.length} quote(s) listed above — include ALL of them exactly as written. Do not select any additional quotes. Do not make up quotes.`;
+    }
 
-INPUT:
-You will be given a detailed recounting or partial summaries of events that occurred in the story.
+    return `You are a fact extractor for a roleplay conversation. Your task is to produce a COMPREHENSIVE, CHRONOLOGICAL record of a long-form story or roleplay from batch summaries.
+
+Think through these dimensions when synthesizing the full story:
+1. Setting — where did things take place across the story? Did locations change, did the characters move around?
+2. Characters — who are these people now compared to who they were at the start? What did we learn about them along the way?
+3. Situation — what's the through-line of events from beginning to present? What were the major turning points, the big decisions, the things that can't be undone?
+4. Relationships — how do these people feel about each other now? How did that change from the beginning? Who got closer, who drifted, who betrayed whom?
+5. World-building — what do we know about how this world works, accumulated across the whole story?
 
 OUTPUT REQUIREMENTS:
-- The summary must be chronological, ordered from earliest to latest events.
-- Focus on plot-significant events, character decisions, relationship developments, and lasting consequences.
-- Preserve emotional continuity: track how major characters feel, change, and relate to one another over time.
-- Merge repeated or similar events into a single coherent progression when appropriate.
-- Exclude conversational filler, small talk, or momentary banter unless it meaningfully affects character dynamics or future events.
-- Do NOT invent new events, motivations, or outcomes.${historyInstruction}
+- Chronological order, earliest to latest.
+- Merge repeated or similar events into a single coherent progression.
+- Exclude conversational filler unless it meaningfully affected character dynamics or plot.
+- Do NOT invent events, motivations, or outcomes.
+- Output a single dense block of factual prose. No labels, no headers, no bullet points — just fact after fact. Every sentence should convey meaningful information. Do not narrate or dramatize — state what happened and what resulted.
 
-This comprehensive summary will be used to provide context in other scenarios or when starting new related stories.
-
-Additionally, from ALL the quotes you've been provided, select the 8 MOST SIGNIFICANT ones. Choose quotes that:
-- Span the whole story arc
-- Mix emotional peaks with most quotable moments  
-- Roughly evenly split between the character and user
-- Best represent the essence of the story
+This comprehensive record will be used to provide context in other scenarios or when starting new related stories.
 
 Length requirement: ${length} (This length is based on the story's size - longer stories get more detail)
+If fewer meaningful facts exist, write fewer sentences. Never pad or invent details to fill the target length.
 
 ${firstMessagesText}BATCH SUMMARIES:
-${batchSummaries}${quotesSection}${trailingText}
+${batchSummaries}${quotesSection}${pinnedQuotesSection}${trailingText}
 
 Format your response EXACTLY as follows:
 
@@ -298,7 +274,7 @@ USER: "Another quote" (Brief context)
 
 ${quoteAttribution}
 
-Select exactly 8 quotes (or fewer if there aren't 8 good ones available). Do not make up quotes - only use quotes from the batch quotes provided above.`;
+${quoteSelectionInstruction}`;
 }
 
 /**
@@ -462,21 +438,6 @@ export async function generateBatchSummary(startIndex, endIndex, batchIndex, ski
 
     let batchType = explicitType || (batchIndex === 0 ? 'establishment' : 'regular');
 
-    // Special handling for history batch (ScenarioCrafter past_history)
-    if (batchType === 'history') {
-        const historyMessage = chat[startIndex];
-        if (!historyMessage || !historyMessage.extra?.scenariocrafter_past_history) {
-            throw new Error('History batch requested but no past history message found');
-        }
-
-        const prompt = buildHistoryPrompt(historyMessage.mes);
-        const response = await callLLM(prompt, skipProfileSwitch);
-        const summaryMatch = response.match(/<summary>([\s\S]*?)<\/summary>/);
-        if (!summaryMatch) throw new Error('Failed to parse summary from response');
-
-        return { summary: summaryMatch[1].trim(), quotes: [], type: 'history' };
-    }
-
     // Get messages for this batch
     const messages = [];
     for (let i = startIndex; i <= endIndex; i++) {
@@ -559,42 +520,15 @@ export async function processUnprocessedBatches(onProgress = null, skipProfileSw
     // Allow callers (auto-mode) to cap the effective length so trailing
     // "active" messages are never included in a complete batch.
     const chatLength = effectiveChatLength ?? chat.length;
+    const completeBatches = Math.floor(chatLength / batchSize);
 
-    // Check for ScenarioCrafter past history
-    const hasPastHistory = chat[0]?.extra?.scenariocrafter_past_history === true;
-    let batchStartOffset = 0;
-
-    if (hasPastHistory) {
-        const existingHistory = batches.find(b => b.startIndex === 0 && b.endIndex === 0 && b.type === 'history');
-
-        if (!existingHistory || !existingHistory.summary || existingHistory.dirty) {
-            if (onProgress) onProgress({ current: 1, total: 'calculating...', type: 'history' });
-
-            try {
-                const historyBatch = await processBatch(0, 0, 0, existingHistory, skipProfileSwitch, 'history');
-                results.push(historyBatch);
-                console.log('Summarizer: History batch processed');
-            } catch (error) {
-                console.error('Summarizer: Failed to process history batch:', error);
-                results.push({ error: error.message, index: 0, type: 'history' });
-            }
-        } else {
-            results.push(existingHistory);
-        }
-
-        batchStartOffset = 1;
-    }
-
-    const availableLength = chatLength - batchStartOffset;
-    const completeBatches = Math.floor(availableLength / batchSize);
-
-    console.log(`[Summarizer] processUnprocessedBatches: chatLength=${chatLength} (actual=${chat.length}), batchStartOffset=${batchStartOffset}, availableLength=${availableLength}, batchSize=${batchSize}, completeBatches=${completeBatches}`);
+    console.log(`[Summarizer] processUnprocessedBatches: chatLength=${chatLength} (actual=${chat.length}), batchSize=${batchSize}, completeBatches=${completeBatches}`);
 
     let consecutiveFailures = 0;
     const MAX_CONSECUTIVE_FAILURES = 2;
 
     for (let i = 0; i < completeBatches; i++) {
-        const startIndex = batchStartOffset + (i * batchSize);
+        const startIndex = i * batchSize;
         const endIndex = startIndex + batchSize - 1;
 
         const existing = batches.find(b => b.startIndex === startIndex && b.endIndex === endIndex);
@@ -606,14 +540,11 @@ export async function processUnprocessedBatches(onProgress = null, skipProfileSw
         const batchType = (i === 0) ? 'establishment' : 'regular';
 
         if (onProgress) {
-            const progressIndex = hasPastHistory ? i + 2 : i + 1;
-            const progressTotal = hasPastHistory ? completeBatches + 1 : completeBatches;
-            onProgress({ current: progressIndex, total: progressTotal, type: batchType });
+            onProgress({ current: i + 1, total: completeBatches, type: batchType });
         }
 
         try {
-            const actualBatchIndex = hasPastHistory ? i + 1 : i;
-            const batch = await processBatch(startIndex, endIndex, actualBatchIndex, existing, skipProfileSwitch, batchType);
+            const batch = await processBatch(startIndex, endIndex, i, existing, skipProfileSwitch, batchType);
             results.push(batch);
             consecutiveFailures = 0; // Reset on success
         } catch (error) {
@@ -662,6 +593,7 @@ export async function generateComprehensive(skipProfileSwitch = false) {
 
     const charName = context.characters?.[context.characterId]?.name || 'Character';
     const otherSpeakers = getOtherSpeakers(chat.filter(m => !m.is_disabled), charName);
+    const pinnedQuotes = getPinnedQuotes();
 
     console.log('Comprehensive summary including:', {
         batches: batches.length,
@@ -669,15 +601,40 @@ export async function generateComprehensive(skipProfileSwitch = false) {
         trailingMessages: trailingMessages.length,
         totalChatLength: chat.length,
         otherSpeakers,
+        pinnedQuotes: pinnedQuotes.length,
     });
 
-    const prompt = buildComprehensivePrompt(batches, firstMessages, trailingMessages, otherSpeakers);
+    const prompt = buildComprehensivePrompt(batches, firstMessages, trailingMessages, otherSpeakers, pinnedQuotes);
     const response = await callLLM(prompt, skipProfileSwitch);
     const parsed = parseResponse(response);
 
+    // Merge pinned quotes into the result: ensure all pinned quotes are present
+    // even if the LLM missed them, and preserve their pinned flag
+    const finalQuotes = [...parsed.quotes];
+    for (const pq of pinnedQuotes) {
+        const alreadyIncluded = finalQuotes.some(q =>
+            q.text === pq.text && q.speaker === pq.speaker,
+        );
+        if (!alreadyIncluded) {
+            finalQuotes.push({
+                speaker: pq.speaker,
+                text: pq.text,
+                context: pq.context,
+            });
+        }
+    }
+
+    // Mark which quotes in the final set are pinned
+    const pinnedTexts = new Set(pinnedQuotes.map(pq => `${pq.speaker}::${pq.text}`));
+    finalQuotes.forEach(q => {
+        if (pinnedTexts.has(`${q.speaker}::${q.text}`)) {
+            q.pinned = true;
+        }
+    });
+
     return setComprehensiveSummary({
         text: parsed.summary,
-        quotes: parsed.quotes,
+        quotes: finalQuotes,
         metadata: getCurrentChatMetadata(),
     });
 }
