@@ -10,11 +10,10 @@ import {
     deleteBatch,
     getSetting,
     getBatchesToInject,
-    getComprehensiveSummary,
-    updateComprehensiveSummary,
-    clearComprehensiveSummary,
+    toggleQuotePin,
 } from './storage.js';
-import { regenerateBatch, regenerateComprehensive } from './generator.js';
+import { regenerateBatch } from './generator.js';
+import { invalidateSummarizerPromptCache, updateSummarizerPromptContent } from './promptInjection.js';
 
 function getMessageDiv(index) {
     return $(`#chat .mes[mesid="${index}"]`);
@@ -72,8 +71,9 @@ export function updateBatchVisuals() {
             (batch.summary.length > 100 ? batch.summary.substring(0, 97) + '...' : batch.summary);
 
         const quoteCount = batch.quotes?.length || 0;
+        const pinnedCount = batch.quotes?.filter(q => q.pinned)?.length || 0;
         const quoteIndicator = quoteCount > 0
-            ? `<span class="batch-quote-count" title="${quoteCount} memorable quote${quoteCount !== 1 ? 's' : ''}">💬 ${quoteCount}</span>`
+            ? `<span class="batch-quote-count" title="${quoteCount} memorable quote${quoteCount !== 1 ? 's' : ''}${pinnedCount > 0 ? `, ${pinnedCount} pinned` : ''}">💬 ${quoteCount}${pinnedCount > 0 ? ` <i class="fa-solid fa-thumbtack batch-pin-indicator"></i>${pinnedCount}` : ''}</span>`
             : '';
 
         let $indicator = $messageDiv.find(`.batch-summary-indicator[data-batch-id="${batch.id}"]`);
@@ -122,7 +122,7 @@ function attachBatchEventHandlers() {
 // Edit Batch Dialog
 // ============================================================
 
-async function showEditBatchDialog(batchId) {
+export async function showEditBatchDialog(batchId) {
     const batches = getBatches();
     const batch = batches.find(b => b.id === batchId);
     if (!batch) return;
@@ -136,19 +136,20 @@ async function showEditBatchDialog(batchId) {
         quotesHTML = '<p class="summarizer-empty-quotes">No memorable quotes in this batch</p>';
     }
 
-    const overlay = createModal(`Edit Batch ${batchIndex + 1} Summary`, `
-        <p class="notes">Messages ${batch.startIndex + 1} - ${batch.endIndex + 1}</p>
+    const overlay = createModal(`Edit Batch ${batchIndex + 1} Summary <span class="notes" style="font-weight: 400; margin-left: 8px;">Messages ${batch.startIndex + 1}–${batch.endIndex + 1}</span>`, `
         <label><strong>Summary</strong></label>
         <textarea id="summarizer-edit-textarea" class="text_pole" rows="6">${batch.summary || ''}</textarea>
-        <label><strong>Memorable Quotes</strong></label>
-        <div id="summarizer-quotes-container">${quotesHTML}</div>
-        <button id="summarizer-add-quote" class="menu_button"><i class="fa-solid fa-plus"></i> Add Quote</button>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <label style="margin: 0;"><strong>Memorable Quotes</strong></label>
+            <button id="summarizer-add-quote" class="menu_button" style="padding: 2px 10px; font-size: 11px; white-space: nowrap;"><i class="fa-solid fa-plus"></i> Add Quote</button>
+        </div>
+        <div id="summarizer-quotes-container" style="flex: 1; min-height: 0;">${quotesHTML}</div>
     `, [
         { label: '<i class="fa-solid fa-floppy-disk"></i> Save', class: 'summarizer-modal-save' },
         { label: 'Cancel', class: 'summarizer-modal-cancel' },
     ]);
 
-    setupQuoteHandlers(overlay, '#summarizer-quotes-container', '#summarizer-add-quote');
+    setupQuoteHandlers(overlay, '#summarizer-quotes-container', '#summarizer-add-quote', batchId);
 
     overlay.querySelector('.summarizer-modal-save').addEventListener('click', () => {
         const newSummary = overlay.querySelector('#summarizer-edit-textarea').value.trim();
@@ -189,105 +190,6 @@ async function handleDeleteBatch(batchId) {
     deleteBatch(batchId);
     updateBatchVisuals();
     toastr.success('Batch summary deleted');
-}
-
-// ============================================================
-// Comprehensive Summary Dialog
-// ============================================================
-
-export async function showComprehensiveSummaryDialog() {
-    const comprehensive = await getComprehensiveSummary();
-    if (!comprehensive) {
-        toastr.warning('No comprehensive summary available. Generate one first.');
-        return;
-    }
-
-    const lastUpdated = new Date(comprehensive.lastGenerated).toLocaleString();
-    const status = comprehensive.edited ? '(Edited)' : '';
-
-    let metaInfo = '';
-    if (comprehensive.metadata) {
-        const parts = [];
-        if (comprehensive.metadata.character) parts.push(`Character: ${comprehensive.metadata.character.displayName}`);
-        if (comprehensive.metadata.persona) parts.push(`Persona: ${comprehensive.metadata.persona.displayName}`);
-        if (parts.length > 0) metaInfo = `<p class="notes">${parts.join(' | ')}</p>`;
-    }
-
-    let quotesHTML = '';
-    if (comprehensive.quotes && comprehensive.quotes.length > 0) {
-        quotesHTML = comprehensive.quotes.map((q, i) => buildQuoteItemHTML(q, i)).join('');
-    } else {
-        quotesHTML = '<p class="summarizer-empty-quotes">No memorable quotes selected</p>';
-    }
-
-    const overlay = createModal(`Comprehensive Summary ${status}`, `
-        <p class="notes">Last generated: ${lastUpdated}</p>
-        ${metaInfo}
-        <div class="summarizer-comp-columns">
-            <div class="summarizer-comp-left">
-                <label><strong>Summary</strong></label>
-                <textarea id="summarizer-comprehensive-textarea" class="text_pole" rows="12">${comprehensive.text || ''}</textarea>
-            </div>
-            <div class="summarizer-comp-right">
-                <label><strong>Memorable Quotes</strong></label>
-                <div id="summarizer-comprehensive-quotes-container">${quotesHTML}</div>
-                <button id="summarizer-comprehensive-add-quote" class="menu_button"><i class="fa-solid fa-plus"></i> Add Quote</button>
-            </div>
-        </div>
-    `, [
-        { label: '<i class="fa-solid fa-refresh"></i> Regenerate', class: 'summarizer-comprehensive-regenerate' },
-        { label: '<i class="fa-solid fa-trash"></i> Delete', class: 'summarizer-comprehensive-delete' },
-        { label: '', class: 'summarizer-spacer', style: 'flex:1' },
-        { label: '<i class="fa-solid fa-floppy-disk"></i> Save', class: 'summarizer-modal-save' },
-        { label: 'Cancel', class: 'summarizer-modal-cancel' },
-    ], 'summarizer-modal-large');
-
-    setupQuoteHandlers(overlay, '#summarizer-comprehensive-quotes-container', '#summarizer-comprehensive-add-quote');
-
-    // Regenerate
-    overlay.querySelector('.summarizer-comprehensive-regenerate').addEventListener('click', async () => {
-        const textarea = overlay.querySelector('#summarizer-comprehensive-textarea');
-        textarea.value = 'Regenerating...';
-        textarea.disabled = true;
-        try {
-            await regenerateComprehensive();
-            const newComp = await getComprehensiveSummary();
-            textarea.value = newComp.text;
-            const container = overlay.querySelector('#summarizer-comprehensive-quotes-container');
-            if (newComp.quotes && newComp.quotes.length > 0) {
-                container.innerHTML = newComp.quotes.map((q, i) => buildQuoteItemHTML(q, i)).join('');
-            } else {
-                container.innerHTML = '<p class="summarizer-empty-quotes">No memorable quotes selected</p>';
-            }
-            toastr.success('Comprehensive summary regenerated');
-        } catch (error) {
-            toastr.error('Failed to regenerate: ' + error.message);
-            textarea.value = comprehensive.text;
-        } finally {
-            textarea.disabled = false;
-        }
-    });
-
-    // Delete
-    overlay.querySelector('.summarizer-comprehensive-delete').addEventListener('click', () => {
-        if (!confirm('Delete comprehensive summary?')) return;
-        clearComprehensiveSummary();
-        toastr.success('Comprehensive summary deleted');
-        overlay.remove();
-    });
-
-    // Save
-    overlay.querySelector('.summarizer-modal-save').addEventListener('click', async () => {
-        const newText = overlay.querySelector('#summarizer-comprehensive-textarea').value.trim();
-        const newQuotes = collectQuotes(overlay);
-        if (newText) {
-            await updateComprehensiveSummary({ text: newText, quotes: newQuotes, edited: true });
-            toastr.success('Comprehensive summary updated');
-        }
-        overlay.remove();
-    });
-
-    overlay.querySelector('.summarizer-modal-cancel').addEventListener('click', () => overlay.remove());
 }
 
 // ============================================================
@@ -367,9 +269,13 @@ export function showIndeterminateProgress(title = 'Generating...') {
 // ============================================================
 
 function buildQuoteItemHTML(quote, idx) {
+    const isPinned = quote.pinned || false;
     return `
-        <div class="summarizer-quote-item" data-index="${idx}">
+        <div class="summarizer-quote-item ${isPinned ? 'summarizer-quote-pinned' : ''}" data-index="${idx}">
             <input type="text" class="text_pole summarizer-quote-speaker" placeholder="Speaker" value="${quote.speaker}">
+            <button class="summarizer-quote-pin${isPinned ? ' pinned' : ''}" title="${isPinned ? 'Unpin quote' : 'Pin quote — always include in context'}">
+                <i class="fa-solid fa-thumbtack"></i>
+            </button>
             <textarea class="text_pole summarizer-quote-text" placeholder="Quote text" rows="2">${quote.text}</textarea>
             <input type="text" class="text_pole summarizer-quote-context" placeholder="Brief context" value="${quote.context}">
             <button class="summarizer-quote-delete menu_button" title="Delete quote"><i class="fa-solid fa-trash"></i></button>
@@ -382,12 +288,13 @@ function collectQuotes(overlay) {
         const speaker = item.querySelector('.summarizer-quote-speaker').value.trim();
         const text = item.querySelector('.summarizer-quote-text').value.trim();
         const context = item.querySelector('.summarizer-quote-context').value.trim();
-        if (speaker && text) quotes.push({ speaker, text, context });
+        const pinned = item.querySelector('.summarizer-quote-pin')?.classList.contains('pinned') || false;
+        if (speaker && text) quotes.push({ speaker, text, context, pinned });
     });
     return quotes;
 }
 
-function setupQuoteHandlers(overlay, containerSel, addBtnSel) {
+function setupQuoteHandlers(overlay, containerSel, addBtnSel, batchId = null) {
     overlay.querySelector(addBtnSel).addEventListener('click', () => {
         const container = overlay.querySelector(containerSel);
         const emptyMsg = container.querySelector('.summarizer-empty-quotes');
@@ -396,6 +303,9 @@ function setupQuoteHandlers(overlay, containerSel, addBtnSel) {
         div.className = 'summarizer-quote-item';
         div.innerHTML = `
             <input type="text" class="text_pole summarizer-quote-speaker" placeholder="Speaker" value="">
+            <button class="summarizer-quote-pin" title="Pin quote — always include in context">
+                <i class="fa-solid fa-thumbtack"></i>
+            </button>
             <textarea class="text_pole summarizer-quote-text" placeholder="Quote text" rows="2"></textarea>
             <input type="text" class="text_pole summarizer-quote-context" placeholder="Brief context" value="">
             <button class="summarizer-quote-delete menu_button" title="Delete quote"><i class="fa-solid fa-trash"></i></button>`;
@@ -403,11 +313,32 @@ function setupQuoteHandlers(overlay, containerSel, addBtnSel) {
     });
 
     overlay.querySelector(containerSel).addEventListener('click', (e) => {
+        // Delete handler
         if (e.target.closest('.summarizer-quote-delete')) {
             e.target.closest('.summarizer-quote-item').remove();
             const container = overlay.querySelector(containerSel);
             if (container.children.length === 0) {
                 container.innerHTML = '<p class="summarizer-empty-quotes">No memorable quotes</p>';
+            }
+        }
+
+        // Pin toggle handler
+        const pinBtn = e.target.closest('.summarizer-quote-pin');
+        if (pinBtn) {
+            const quoteItem = pinBtn.closest('.summarizer-quote-item');
+            const isPinned = pinBtn.classList.toggle('pinned');
+            quoteItem.classList.toggle('summarizer-quote-pinned', isPinned);
+            pinBtn.title = isPinned ? 'Unpin quote' : 'Pin quote — always include in context';
+
+            // If we have a batchId, persist the pin state immediately
+            if (batchId) {
+                const quoteIndex = parseInt(quoteItem.dataset.index, 10);
+                if (!isNaN(quoteIndex)) {
+                    toggleQuotePin(batchId, quoteIndex);
+                    invalidateSummarizerPromptCache();
+                    updateSummarizerPromptContent();
+                    updateBatchVisuals();
+                }
             }
         }
     });

@@ -508,7 +508,7 @@ export async function buildContextArchivesContent() {
         return `[Context: ${shortLabel}]\n${item.text}`;
     });
 
-    return `<prior_story_context>\n${preamble}\n\n${sections.join('\n\n')}\n</prior_story_context>`;
+    return `<priorStoryContext>\n${preamble}\n\n${sections.join('\n\n')}\n</priorStoryContext>`;
 }
 
 /**

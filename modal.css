@@ -1,0 +1,859 @@
+/* ============================================================
+   Simple Summarizer — Modal Styles
+   Nebula Dark aesthetic: dark transparency, muted palette
+   Pattern: Chat Design / Dynamic Events modal
+   Prefix: ss-
+   ============================================================ */
+
+/* ─── Overlay ─────────────────────────────────────── */
+
+.ss-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 9998;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+    pointer-events: none;
+}
+.ss-overlay.ss-visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+/* ─── Modal ───────────────────────────────────────── */
+
+.ss-modal {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) scale(0.95);
+    width: min(860px, 92vw);
+    height: min(700px, 88vh);
+    background: rgba(18, 18, 22, 0.97);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    opacity: 0;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    pointer-events: none;
+    overflow: hidden;
+}
+.ss-modal.ss-visible {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+    pointer-events: auto;
+}
+
+/* ─── Header ──────────────────────────────────────── */
+
+.ss-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    flex-shrink: 0;
+}
+.ss-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.85);
+    letter-spacing: 0.3px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.ss-title i { color: rgba(180, 160, 140, 0.7); }
+
+.ss-close {
+    cursor: pointer;
+    color: rgba(255, 255, 255, 0.35);
+    font-size: 16px;
+    padding: 4px 6px;
+    transition: color 0.15s;
+}
+.ss-close:hover { color: rgba(255, 255, 255, 0.8); }
+
+/* ─── Body ────────────────────────────────────────── */
+
+.ss-body {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+}
+
+/* ─── Sidebar ─────────────────────────────────────── */
+
+.ss-sidebar {
+    width: 56px;
+    flex-shrink: 0;
+    border-right: 1px solid rgba(255, 255, 255, 0.06);
+    padding: 10px 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+}
+
+.ss-nav-item {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 42px;
+    height: 42px;
+    cursor: pointer;
+    color: rgba(255, 255, 255, 0.4);
+    transition: color 0.15s, background 0.15s;
+    border-left: 2px solid transparent;
+}
+.ss-nav-item:hover {
+    color: rgba(255, 255, 255, 0.7);
+    background: rgba(255, 255, 255, 0.03);
+}
+.ss-nav-item.ss-nav-active {
+    color: rgba(255, 255, 255, 0.9);
+    background: rgba(255, 255, 255, 0.06);
+    border-left-color: rgba(180, 160, 140, 0.6);
+}
+.ss-nav-item i { font-size: 18px; }
+
+/* ─── Content Area ────────────────────────────────── */
+
+.ss-content {
+    flex: 1;
+    padding: 16px 20px;
+    overflow-y: auto;
+}
+
+/* ─── Tab Header ──────────────────────────────────── */
+
+.ss-tab-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 14px;
+}
+.ss-tab-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.85);
+}
+.ss-tab-subtitle {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.35);
+    margin-left: 10px;
+}
+.ss-tab-actions {
+    display: flex;
+    gap: 6px;
+}
+
+/* ─── Buttons ─────────────────────────────────────── */
+
+.ss-btn {
+    padding: 6px 12px;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    border: none;
+    transition: background 0.15s, color 0.15s;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+}
+.ss-btn-accent {
+    background: rgba(180, 160, 140, 0.2);
+    color: rgba(255, 255, 255, 0.75);
+    border: 1px solid rgba(180, 160, 140, 0.25);
+}
+.ss-btn-accent:hover {
+    background: rgba(180, 160, 140, 0.3);
+    color: rgba(255, 255, 255, 0.9);
+}
+.ss-btn-ghost {
+    background: none;
+    color: rgba(255, 255, 255, 0.45);
+}
+.ss-btn-ghost:hover {
+    color: rgba(255, 255, 255, 0.75);
+    background: rgba(255, 255, 255, 0.04);
+}
+.ss-btn-danger-text { color: rgba(220, 80, 80, 0.6); }
+.ss-btn-danger-text:hover { color: rgba(220, 80, 80, 0.9); }
+
+.ss-btn-icon {
+    background: none;
+    border: none;
+    color: rgba(255, 255, 255, 0.25);
+    cursor: pointer;
+    padding: 3px 5px;
+    font-size: 12px;
+    transition: color 0.15s;
+}
+.ss-btn-icon:hover { color: rgba(255, 255, 255, 0.7); }
+.ss-btn-icon:disabled { opacity: 0.3; cursor: default; }
+
+/* ─── Dividers ────────────────────────────────────── */
+
+.ss-divider {
+    border: none;
+    border-top: 1px solid rgba(255, 255, 255, 0.04);
+    margin: 6px 0;
+}
+.ss-divider-section {
+    border: none;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    margin: 14px 0;
+}
+
+/* ─── Empty States ────────────────────────────────── */
+
+.ss-empty {
+    text-align: center;
+    color: rgba(255, 255, 255, 0.3);
+    font-size: 13px;
+    padding: 24px 0;
+}
+.ss-empty-sm {
+    color: rgba(255, 255, 255, 0.25);
+    font-size: 12px;
+    padding: 8px 0;
+    font-style: italic;
+}
+.ss-empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    gap: 10px;
+    color: rgba(255, 255, 255, 0.3);
+    text-align: center;
+}
+.ss-empty-state i { font-size: 28px; opacity: 0.4; }
+.ss-empty-state p { margin: 0; font-size: 13px; }
+.ss-empty-hint { font-size: 12px; opacity: 0.6; }
+
+/* ─── Section Labels ──────────────────────────────── */
+
+.ss-section-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.45);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.ss-section-label i {
+    font-size: 12px;
+    color: rgba(180, 160, 140, 0.5);
+}
+
+/* ─── Settings Controls ───────────────────────────── */
+
+.ss-settings {
+    max-width: 560px;
+}
+
+.ss-setting-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 4px 0;
+}
+.ss-setting-item-col {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 4px 0;
+}
+.ss-setting-title {
+    font-size: 13px;
+    color: rgba(255, 255, 255, 0.8);
+    font-weight: 500;
+}
+.ss-setting-desc {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.35);
+    margin-top: 1px;
+}
+
+/* ─── Checkbox (explicit theme match) ─────────────── */
+
+.ss-toggle { flex-shrink: 0; }
+.ss-toggle-slider { display: none; }
+
+.ss-modal input[type='checkbox'] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 1.25em;
+    height: 1.25em;
+    border-radius: 4px;
+    background-color: var(--SmartThemeBlurTintColor, rgba(0,0,0,0.2));
+    border: 2px solid var(--SmartThemeBorderColor);
+    display: grid;
+    place-content: center;
+    margin: 0;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background-color 0.2s ease, border-color 0.2s ease, transform 0.1s ease;
+}
+.ss-modal input[type='checkbox']:active {
+    transform: scale(0.92);
+}
+.ss-modal input[type='checkbox']:checked {
+    background-color: var(--SmartThemeQuoteColor);
+}
+
+/* ─── Inputs & Selects ────────────────────────────── */
+
+.ss-input-num {
+    width: 60px;
+    padding: 5px 7px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.8);
+    font-size: 13px;
+    font-family: inherit;
+    text-align: center;
+}
+.ss-input-num:focus {
+    outline: none;
+    border-color: rgba(180, 160, 140, 0.4);
+}
+.ss-input-sm {
+    width: 50px;
+    padding: 4px 6px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.8);
+    font-size: 12px;
+    font-family: inherit;
+    text-align: center;
+}
+.ss-input-sm:focus {
+    outline: none;
+    border-color: rgba(180, 160, 140, 0.4);
+}
+
+.ss-select {
+    padding: 5px 8px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.8);
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+}
+.ss-select:focus {
+    outline: none;
+    border-color: rgba(180, 160, 140, 0.4);
+}
+.ss-select option {
+    background: rgb(25, 25, 30);
+    color: rgba(255, 255, 255, 0.85);
+}
+
+.ss-textarea {
+    width: 100%;
+    padding: 8px 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.8);
+    font-size: 13px;
+    font-family: inherit;
+    resize: vertical;
+    line-height: 1.5;
+    box-sizing: border-box;
+}
+.ss-textarea:focus {
+    outline: none;
+    border-color: rgba(180, 160, 140, 0.4);
+}
+
+.ss-field-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.5);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    margin-bottom: 5px;
+    display: block;
+}
+
+/* ─── Exclusion Row ───────────────────────────────── */
+
+.ss-exclusion-row {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-top: 4px;
+}
+.ss-radio-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.7);
+    cursor: pointer;
+}
+
+.ss-info-block {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.5);
+    padding: 8px 12px;
+    background: rgba(0, 0, 0, 0.15);
+    border: 1px solid rgba(255, 255, 255, 0.04);
+    line-height: 1.6;
+}
+
+/* ─── Settings Grid (2-col number layout) ─────────── */
+
+.ss-grid-2col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+}
+.ss-grid-2col > .ss-grid-cell {
+    padding: 8px 12px 8px 0;
+}
+.ss-grid-2col > .ss-grid-cell-right {
+    padding: 8px 0 8px 12px;
+    border-left: 1px solid rgba(255, 255, 255, 0.06);
+}
+.ss-grid-2col > .ss-grid-cell-bottom {
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* ─── No-chat Fallback Message ────────────────────── */
+
+.ss-no-chat-msg {
+    padding: 10px 12px;
+    margin: 4px 0 10px;
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.4);
+    text-align: center;
+    background: rgba(0, 0, 0, 0.12);
+    border: 1px dashed rgba(255, 255, 255, 0.06);
+}
+.ss-no-chat-msg i {
+    margin-right: 6px;
+    opacity: 0.6;
+}
+
+/* ─── Tab Pointer Hint ────────────────────────────── */
+
+.ss-tab-pointer {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.35);
+    font-style: italic;
+    margin-top: 8px;
+    padding: 6px 10px;
+    border-left: 2px solid rgba(255, 255, 255, 0.08);
+    background: rgba(0, 0, 0, 0.08);
+}
+.ss-tab-pointer strong {
+    color: rgba(255, 255, 255, 0.55);
+    font-weight: 600;
+    font-style: normal;
+}
+
+/* ─── Pinned Summary Banner ───────────────────────── */
+
+.ss-pinned-summary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    margin-bottom: 10px;
+    font-size: 12px;
+    color: rgba(180, 160, 140, 0.8);
+    background: rgba(180, 160, 140, 0.06);
+    border: 1px solid rgba(180, 160, 140, 0.12);
+}
+.ss-pinned-summary i { font-size: 11px; }
+
+/* ─── Batch Cards ─────────────────────────────────── */
+
+.ss-batch-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.ss-batch-card {
+    padding: 10px 12px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    transition: background 0.15s, border-color 0.15s;
+    cursor: pointer;
+}
+.ss-batch-card:hover {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgba(255, 255, 255, 0.1);
+}
+.ss-batch-card.ss-batch-dirty {
+    border-left: 2px solid rgba(220, 160, 60, 0.5);
+}
+.ss-batch-card.ss-batch-edited {
+    border-left: 2px solid rgba(100, 160, 220, 0.4);
+}
+
+.ss-batch-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+.ss-batch-card-info {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.ss-batch-num {
+    font-size: 13px;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.8);
+}
+.ss-batch-type {
+    font-size: 10px;
+    padding: 1px 5px;
+    background: rgba(180, 160, 140, 0.15);
+    color: rgba(180, 160, 140, 0.8);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+.ss-batch-range {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.3);
+}
+.ss-batch-status {
+    font-size: 10px;
+    color: rgba(220, 160, 60, 0.8);
+    font-weight: 500;
+}
+.ss-batch-card-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.ss-batch-quotes {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.4);
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+}
+.ss-batch-quotes i { font-size: 9px; }
+
+.ss-batch-card-actions {
+    display: flex;
+    gap: 2px;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+.ss-batch-card:hover .ss-batch-card-actions { opacity: 1; }
+
+.ss-batch-preview {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.4);
+    line-height: 1.4;
+    font-style: italic;
+}
+
+/* ─── Comprehensive Tab ───────────────────────────── */
+
+.ss-comp-meta {
+    display: flex;
+    gap: 12px;
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.35);
+    margin-bottom: 12px;
+}
+.ss-comp-edited {
+    color: rgba(100, 160, 220, 0.7);
+    font-weight: 500;
+}
+
+.ss-comp-body {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+.ss-comp-section { }
+
+.ss-comp-quotes {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 200px;
+    overflow-y: auto;
+}
+.ss-comp-quote-item {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+    padding: 5px 8px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.04);
+    font-size: 12px;
+}
+.ss-comp-quote-speaker {
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.7);
+    white-space: nowrap;
+}
+.ss-comp-quote-text {
+    color: rgba(255, 255, 255, 0.55);
+    font-style: italic;
+    flex: 1;
+}
+.ss-comp-quote-ctx {
+    color: rgba(255, 255, 255, 0.25);
+    font-size: 11px;
+    white-space: nowrap;
+}
+
+.ss-comp-footer {
+    margin-top: 12px;
+    display: flex;
+    justify-content: flex-end;
+}
+
+/* ─── Archives Tab ────────────────────────────────── */
+
+.ss-archives-section {
+    margin-bottom: 6px;
+}
+
+.ss-archive-assigned-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    margin-bottom: 3px;
+}
+.ss-archive-reorder {
+    display: flex;
+    flex-direction: row;
+    gap: 1px;
+}
+.ss-archive-assigned-label {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.75);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.ss-archive-assigned-meta {
+    flex: 1;
+    min-width: 0;
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.3);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ss-archives-list {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+}
+.ss-archives-list > .ss-empty,
+.ss-archives-list > .ss-empty-sm {
+    grid-column: 1 / -1;
+}
+
+.ss-archive-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.04);
+    transition: background 0.15s;
+    min-width: 0;
+    overflow: hidden;
+}
+.ss-archive-row:hover {
+    background: rgba(255, 255, 255, 0.04);
+}
+.ss-archive-row.ss-archive-assigned {
+    border-left: 2px solid rgba(180, 160, 140, 0.4);
+}
+
+.ss-archive-row-info { flex: 1; min-width: 0; }
+.ss-archive-row-title {
+    font-size: 13px;
+    color: rgba(255, 255, 255, 0.75);
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ss-archive-row-meta {
+    display: flex;
+    gap: 8px;
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.3);
+    margin-top: 2px;
+}
+.ss-archive-tag {
+    color: rgba(180, 160, 140, 0.7);
+    font-weight: 500;
+}
+.ss-archive-row-preview {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.25);
+    margin-top: 3px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ─── Scrollbars (explicit theme match) ───────────── */
+
+.ss-content,
+.ss-comp-quotes {
+    scrollbar-width: thin;
+    scrollbar-color: var(--SmartThemeUnderlineColor) transparent;
+}
+.ss-content::-webkit-scrollbar,
+.ss-comp-quotes::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+    background-color: transparent;
+}
+.ss-content::-webkit-scrollbar-track,
+.ss-comp-quotes::-webkit-scrollbar-track {
+    background-color: transparent;
+}
+.ss-content::-webkit-scrollbar-track:hover,
+.ss-comp-quotes::-webkit-scrollbar-track:hover {
+    background-color: var(--SmartThemeChatTintColor);
+    border-left: 1px solid var(--SmartThemeBorderColor);
+}
+.ss-content::-webkit-scrollbar-thumb,
+.ss-comp-quotes::-webkit-scrollbar-thumb {
+    background-color: var(--SmartThemeUnderlineColor);
+}
+.ss-content::-webkit-scrollbar-thumb:hover,
+.ss-comp-quotes::-webkit-scrollbar-thumb:hover {
+    background-color: var(--SmartThemeQuoteColor);
+}
+.ss-content::-webkit-scrollbar-button,
+.ss-content::-webkit-scrollbar-corner,
+.ss-comp-quotes::-webkit-scrollbar-button,
+.ss-comp-quotes::-webkit-scrollbar-corner {
+    display: none;
+    background: transparent;
+}
+
+/* ─── Pinned Quotes Tab ───────────────────────────── */
+
+.ss-pinned-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.ss-pinned-item {
+    position: relative;
+    padding: 10px 12px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: border-color 0.15s;
+}
+.ss-pinned-item:hover {
+    border-color: rgba(255, 255, 255, 0.12);
+}
+
+.ss-pinned-item-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+
+.ss-pinned-speaker {
+    font-weight: 600;
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.85);
+}
+
+.ss-pinned-batch {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.35);
+    padding: 1px 6px;
+    background: rgba(255, 255, 255, 0.04);
+    border-radius: 3px;
+}
+
+.ss-pinned-text {
+    font-size: 13px;
+    font-style: italic;
+    color: rgba(255, 255, 255, 0.7);
+    line-height: 1.45;
+    margin-bottom: 2px;
+}
+
+.ss-pinned-context {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.35);
+    line-height: 1.3;
+}
+
+.ss-pinned-item-actions {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    display: flex;
+    gap: 4px;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+.ss-pinned-item:hover .ss-pinned-item-actions {
+    opacity: 1;
+}
+
+.ss-pinned-item-actions .ss-pinned-unpin {
+    color: rgba(180, 160, 140, 0.8);
+}
+.ss-pinned-item-actions .ss-pinned-unpin:hover {
+    color: rgba(220, 180, 140, 1);
+}
+
+/* ─── Responsive ──────────────────────────────────── */
+
+@media (max-width: 640px) {
+    .ss-modal {
+        width: 96vw;
+        height: 92vh;
+    }
+    .ss-sidebar {
+        width: 46px;
+    }
+    .ss-nav-item {
+        width: 36px;
+        height: 36px;
+    }
+    .ss-nav-item i { font-size: 15px; }
+    .ss-content {
+        padding: 12px 14px;
+    }
+    .ss-batch-card-actions { opacity: 1; }
+    .ss-pinned-item-actions { opacity: 1; }
+}

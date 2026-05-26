@@ -40,9 +40,9 @@ export const default_settings = {
     alwaysKeepLastNBatches: 3,
 
     // Summary lengths (for prompts)
-    establishmentSummaryLength: '1 paragraph, 6-8 sentences',
-    batchSummaryLength: '2-4 sentences',
-    comprehensiveSummaryLength: '2 paragraphs, 6-8 sentences each',
+    establishmentSummaryLength: '6-10 concise factual sentences',
+    batchSummaryLength: '3-6 concise factual sentences',
+    comprehensiveSummaryLength: '12-18 concise factual sentences',
 
     // Connection settings
     connectionProfile: '',
@@ -71,10 +71,10 @@ export function getDynamicComprehensiveLength() {
     const batches = getBatches().filter(b => !b.dirty && b.summary);
     const batchCount = batches.length;
 
-    if (batchCount < 10) return '1 paragraph, 6-8 sentences';
-    if (batchCount <= 20) return '2 paragraphs, 6-8 sentences each';
-    if (batchCount <= 30) return '3 paragraphs, 6-8 sentences each';
-    return '3-4 paragraphs, 6-8 sentences each';
+    if (batchCount < 10) return '8-12 concise factual sentences';
+    if (batchCount <= 20) return '12-18 concise factual sentences';
+    if (batchCount <= 30) return '18-24 concise factual sentences';
+    return '24-32 concise factual sentences';
 }
 
 /**
@@ -84,9 +84,9 @@ export function getComprehensiveLengthDescription() {
     const batches = getBatches().filter(b => !b.dirty && b.summary);
     const batchCount = batches.length;
 
-    if (batchCount < 10) return '1 paragraph (short story)';
-    if (batchCount <= 20) return '2 paragraphs (medium story)';
-    return '3 paragraphs (long story)';
+    if (batchCount < 10) return '8-12 sentences (short story)';
+    if (batchCount <= 20) return '12-18 sentences (medium story)';
+    return '18-32 sentences (long story)';
 }
 
 /**
@@ -355,6 +355,62 @@ export function markBatchRangeDirty(startIndex, endIndex) {
         }
     });
     return marked;
+}
+
+// ============================================================
+// Pinned Quotes
+// ============================================================
+
+/**
+ * Toggle the pinned state of a quote within a batch.
+ * @param {string} batchId - The batch containing the quote
+ * @param {number} quoteIndex - Index of the quote in the batch's quotes array
+ * @returns {boolean|null} New pinned state, or null if not found
+ */
+export function toggleQuotePin(batchId, quoteIndex) {
+    const batch = getBatch(batchId);
+    if (!batch || !batch.quotes || quoteIndex < 0 || quoteIndex >= batch.quotes.length) return null;
+
+    const quote = batch.quotes[quoteIndex];
+    quote.pinned = !quote.pinned;
+    updateBatch(batchId, { quotes: batch.quotes });
+    return quote.pinned;
+}
+
+/**
+ * Get all pinned quotes across all batches in the current chat.
+ * Returns them with batch context for display and injection.
+ * @returns {Array<{speaker: string, text: string, context: string, batchId: string, batchIndex: number, quoteIndex: number}>}
+ */
+export function getPinnedQuotes() {
+    const batches = getBatches();
+    const pinned = [];
+
+    batches.forEach((batch, batchIdx) => {
+        if (!batch.quotes) return;
+        batch.quotes.forEach((quote, quoteIdx) => {
+            if (quote.pinned) {
+                pinned.push({
+                    speaker: quote.speaker,
+                    text: quote.text,
+                    context: quote.context || '',
+                    batchId: batch.id,
+                    batchIndex: batchIdx,
+                    quoteIndex: quoteIdx,
+                });
+            }
+        });
+    });
+
+    return pinned;
+}
+
+/**
+ * Count of pinned quotes in current chat.
+ * @returns {number}
+ */
+export function getPinnedQuoteCount() {
+    return getPinnedQuotes().length;
 }
 
 // ============================================================

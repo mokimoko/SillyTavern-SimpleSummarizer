@@ -16,6 +16,7 @@ import {
     initSettings, getSetting, isEnabled, toggleEnabled, getBatches, getUnprocessedBatches,
     clearAllBatches, fullReset, getComprehensiveSummary, markBatchRangeDirty,
     getBatchesToInject, shouldExcludeMessage, MODULE_NAME,
+    toggleQuotePin, getPinnedQuotes, getPinnedQuoteCount,
 } from './src/storage.js';
 import { processUnprocessedBatches, generateComprehensive } from './src/generator.js';
 import { switchToProfileWithConfirmation, restoreProfileWithConfirmation } from './src/utils.js';
@@ -24,8 +25,8 @@ import {
     invalidateSummarizerPromptCache, refreshSummarizerPrompt,
     applyContextArchivesPrompt, updateContextArchivesPromptContent, invalidateContextArchivesCache,
 } from './src/promptInjection.js';
-import { updateBatchVisuals, showComprehensiveSummaryDialog, showProgressDialog, showIndeterminateProgress } from './src/ui.js';
-import { createSettingsHTML, initSettingsHandlers, refreshSettingsUI, render as vmRender, init as vmInit } from './src/settings.js';
+import { updateBatchVisuals, showProgressDialog, showIndeterminateProgress } from './src/ui.js';
+import { openSummarizerModal, closeSummarizerModal } from './src/modal.js';
 import { runLegacyMigration } from './src/legacyMigration.js';
 import {
     getConfig as getCAConfig, setConfig as setCAConfig,
@@ -205,7 +206,7 @@ async function generateComprehensiveSummary() {
             'Comprehensive summary generated. View it now?',
             'confirm', '', { okButton: 'View', cancelButton: 'Later' },
         );
-        if (viewNow) await showComprehensiveSummaryDialog();
+        if (viewNow) openSummarizerModal('comprehensive');
         await updateMacroCache();
     } catch (e) {
         progress.close();
@@ -277,7 +278,6 @@ function registerEventHandlers() {
         invalidateSummarizerPromptCache();
         invalidateContextArchivesCache();
         updateBatchVisuals();
-        refreshSettingsUI();
         updateSummarizerPromptContent();
         updateContextArchivesPromptContent();
         updateMacroCache();
@@ -313,7 +313,6 @@ function registerSlashCommands() {
         callback: () => {
             const s = toggleEnabled();
             toastr.info(`Summarizer ${s ? 'enabled' : 'disabled'} for this chat`);
-            refreshSettingsUI();
             return String(s);
         },
         helpString: 'Toggle summarizer on/off for the current chat',
@@ -333,8 +332,14 @@ function registerSlashCommands() {
 
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'summarizer-view-comprehensive',
-        callback: async () => { await showComprehensiveSummaryDialog(); return ''; },
-        helpString: 'View and edit the comprehensive summary',
+        callback: async () => { openSummarizerModal('comprehensive'); return ''; },
+        helpString: 'Open the Summarizer modal on the Comprehensive tab',
+    }));
+
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+        name: 'summarizer-modal',
+        callback: async () => { openSummarizerModal(); return ''; },
+        helpString: 'Open the Simple Summarizer management modal',
     }));
 
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
@@ -436,37 +441,6 @@ async function registerMacros() {
 }
 
 // ============================================================
-// Drawer UI setup
-// ============================================================
-
-function setupDrawerUI() {
-    const container = $('#extensions_settings2');
-    if (!container.length) {
-        console.warn('[Summarizer] Settings container #extensions_settings2 not found');
-        return;
-    }
-
-    // Wrap in a removable section so detectVM() can cleanly nuke it
-    const wrapper = $('<div id="summarizer-drawer-section"></div>');
-    wrapper.append(createSettingsHTML());
-    container.append(wrapper);
-
-    initSettingsHandlers();
-    refreshSettingsUI();
-
-    // Attach action button handlers
-    $('#summarizer-process-btn').off('click').on('click', () => processNewBatches(false));
-    $('#summarizer-comprehensive-btn').off('click').on('click', () => generateComprehensiveSummary());
-    $('#summarizer-view-comprehensive-btn').off('click').on('click', () => showComprehensiveSummaryDialog());
-    $('#summarizer-clear-btn').off('click').on('click', async () => {
-        if (!confirm('Clear all summaries for this chat?\n\nThis cannot be undone.')) return;
-        fullReset();
-        updateBatchVisuals();
-        toastr.success('All summaries cleared');
-    });
-}
-
-// ============================================================
 // VM Detection (APP_READY)
 // ============================================================
 
@@ -478,27 +452,43 @@ function detectVM() {
     applyContextArchivesPrompt();
     updateContextArchivesPromptContent();
 
-    // Settings modal: register tab + remove drawer if VM is present
-    const vmSM = window.VerseManager?.settingsModal;
-    if (vmSM) {
-        console.log('[Summarizer] Registering into VM settings modal...');
-        vmSM.register('summarizer-standalone', {
-            icon: 'fa-solid fa-scroll',
-            label: 'Summarizer',
-            render: vmRender,
-            init: vmInit,
-        });
-        // Drawer is redundant once VM modal is available
-        $('#summarizer-drawer-section').remove();
-        console.log('[Summarizer] Drawer removed — settings available in VM modal');
-    }
-
     // Legacy migration: copy VM archive summaries → standalone fileStore
     if (window.VerseManager?.archiveStore) {
         runLegacyMigration().catch(e => {
             console.error('[Summarizer] Legacy migration failed:', e);
         });
     }
+}
+
+// ============================================================
+// Input Area Button
+// ============================================================
+
+function setupInputButton() {
+    const extensionsMenu = document.getElementById('extensionsMenu');
+    if (!extensionsMenu) {
+        // Fallback: try common ST extension menu selectors
+        const altMenu = document.querySelector('#data_bank_wand_container') || document.querySelector('.extensions_block');
+        if (altMenu) {
+            const btn = createInputButton();
+            altMenu.appendChild(btn);
+        }
+        return;
+    }
+
+    const btn = createInputButton();
+    extensionsMenu.appendChild(btn);
+}
+
+function createInputButton() {
+    const btn = document.createElement('div');
+    btn.id = 'summarizer-input-btn';
+    btn.className = 'list-group-item flex-container flexGap5 interactable';
+    btn.title = 'Simple Summarizer';
+    btn.tabIndex = 0;
+    btn.innerHTML = '<i class="fa-solid fa-scroll"></i> Summarizer';
+    btn.addEventListener('click', () => openSummarizerModal());
+    return btn;
 }
 
 // ============================================================
@@ -512,6 +502,15 @@ function exposePublicAPI() {
         getSummary: getFileSummary,
         getBatches,
         isEnabled,
+
+        // Modal
+        openModal: openSummarizerModal,
+        closeModal: closeSummarizerModal,
+
+        // Pinned quotes
+        toggleQuotePin,
+        getPinnedQuotes,
+        getPinnedQuoteCount,
 
         // Generation (for VM's continueChat etc.)
         processUnprocessedBatches,
@@ -566,13 +565,19 @@ jQuery(async () => {
     initFileStore();
     initSettings();
 
-    // Set up drawer UI in extensions panel
-    setupDrawerUI();
-
     // Register features
     registerEventHandlers();
     registerSlashCommands();
     await registerMacros();
+
+    // Load modal CSS
+    const modalCSS = document.createElement('link');
+    modalCSS.rel = 'stylesheet';
+    modalCSS.href = '/scripts/extensions/third-party/SillyTavern-SimpleSummarizer/modal.css';
+    document.head.appendChild(modalCSS);
+
+    // Add extension button to input area
+    setupInputButton();
 
     // Expose API immediately (VM may need it on APP_READY)
     exposePublicAPI();
