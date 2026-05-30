@@ -87,9 +87,7 @@ globalThis.summarizer_intercept_messages = function (chat, _contextSize, _abort,
             excludedCount++;
         }
     }
-    if (excludedCount > 0) {
-        console.log(`[Summarizer Intercept] Excluded ${excludedCount}/${chatLength} messages (keeping last ${chatLength - excludedCount})`);
-    }
+
 };
 
 // ============================================================
@@ -119,7 +117,6 @@ async function autoProcessNewBatches() {
     if (completeBatches <= processedBatches) return;
 
     try {
-        console.log('[Summarizer] Auto-processing', completeBatches - processedBatches, 'new batch(es)... (buffer:', autoBuffer, 'msgs)');
         await processUnprocessedBatches(null, false, effectiveLength);
         updateBatchVisuals();
         updateSummarizerPromptContent();
@@ -210,7 +207,6 @@ async function generateComprehensiveSummary() {
         await updateMacroCache();
     } catch (e) {
         progress.close();
-        console.error('[Summarizer] Failed to generate comprehensive:', e);
         toastr.error('Failed: ' + e.message);
     } finally {
         if (originalProfile) await restoreProfileWithConfirmation(originalProfile);
@@ -236,13 +232,11 @@ function registerEventHandlers() {
         // Bail if streaming is still in progress (matches Qvink's approach —
         // don't poll-wait, just exit; we'll catch it on the next message)
         if (streamingProcessor && !streamingProcessor.isFinished) {
-            console.log('[Summarizer] Streaming still active, skipping auto-process');
             return;
         }
 
         // Bail if agents are running
         if (window.VerseManager?.agents?.isAgentRunActive?.()) {
-            console.log('[Summarizer] Agent run active, skipping auto-process');
             return;
         }
 
@@ -262,7 +256,6 @@ function registerEventHandlers() {
             if (streamingProcessor && !streamingProcessor.isFinished) return;
             if (window.VerseManager?.agents?.isAgentRunActive?.()) return;
 
-            console.log('[Summarizer] Auto-processing new batches...');
             isSummarizerRunning = true;
             try {
                 await autoProcessNewBatches();
@@ -295,7 +288,6 @@ function registerEventHandlers() {
 
         const marked = markBatchRangeDirty(startIndex, endIndex);
         if (marked > 0) {
-            console.log(`[Summarizer] Marked ${marked} batch(es) dirty due to deletion`);
             invalidateSummarizerPromptCache();
             updateBatchVisuals();
         }
@@ -371,7 +363,6 @@ function registerSlashCommands() {
                 dirtyBatches: batches.filter(b => b.dirty).length,
                 hasComprehensive: !!comp,
             };
-            console.log('[Summarizer] Status:', status);
             return JSON.stringify(status, null, 2);
         },
         helpString: 'Show summarizer status for the current chat',
@@ -433,10 +424,8 @@ async function registerMacros() {
             exampleUsage: ['{{batch_count}}'],
             handler: () => isEnabled() ? String(getBatches().length) : '0',
         });
-
-        console.log('[Summarizer] Macros registered via MacroRegistry');
     } catch {
-        console.log('[Summarizer] MacroRegistry not available, macros not registered');
+        // MacroRegistry not available
     }
 }
 
@@ -446,7 +435,6 @@ async function registerMacros() {
 
 function detectVM() {
     // Always apply standalone prompts (hardcoded placement)
-    console.log('[Summarizer] Applying prompts...');
     applySummarizerPrompt();
     updateSummarizerPromptContent();
     applyContextArchivesPrompt();
@@ -548,8 +536,6 @@ function exposePublicAPI() {
         // Presence flag
         isInstalled: true,
     };
-
-    console.log('[Summarizer] Public API exposed at window.Summarizer');
 }
 
 // ============================================================
@@ -558,8 +544,6 @@ function exposePublicAPI() {
 
 jQuery(async () => {
     if (initialized) return;
-
-    console.log('[Summarizer] Initializing standalone extension...');
 
     // Initialize storage systems
     initFileStore();
@@ -606,5 +590,4 @@ jQuery(async () => {
     }
 
     initialized = true;
-    console.log('[Summarizer] Initialization complete');
 });

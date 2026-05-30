@@ -21,8 +21,6 @@ import {
     getPlacementConfig as getCAPlacement,
 } from './contextArchives.js';
 
-const log = (...args) => console.log('[Summarizer Prompt]', ...args);
-
 const PROMPT_IDENTIFIER = 'summarizer_batches';
 const CA_PROMPT_IDENTIFIER = 'summarizer_context_archives';
 
@@ -135,24 +133,10 @@ function buildPromptContent() {
  */
 export function applySummarizerPrompt() {
     const settings = getPromptSettings();
-    if (settings.includeInPrompts === false) {
-        log('⛔ includeInPrompts is FALSE — skipping injection');
-        return;
-    }
+    if (settings.includeInPrompts === false) return;
 
     const content = buildPromptContent();
     const context = getContext();
-
-    log(`📋 Injection diagnostics:`,
-        `\n  content length: ${content.length}`,
-        `\n  content preview: ${content.substring(0, 120)}...`,
-        `\n  position: ${INJECTION_POSITION} (IN_CHAT)`,
-        `\n  depth: ${BATCH_DEPTH}`,
-        `\n  role: ${INJECTION_ROLE} (SYSTEM)`,
-        `\n  isEnabled: ${isEnabled()}`,
-        `\n  batches total: ${getBatches().length}`,
-        `\n  batches with summaries: ${getBatches().filter(b => !b.dirty && b.summary).length}`,
-    );
 
     context.setExtensionPrompt(
         PROMPT_IDENTIFIER,
@@ -162,8 +146,6 @@ export function applySummarizerPrompt() {
         false,              // not scannable
         INJECTION_ROLE,     // 0 = SYSTEM
     );
-
-    log(content ? '✓ Applied batch summaries prompt (before chat history)' : '✓ Cleared batch summaries prompt (no batches)');
 }
 
 /**
@@ -255,8 +237,6 @@ export async function updateContextArchivesPromptContent() {
             false,              // not scannable
             INJECTION_ROLE,     // 0 = SYSTEM
         );
-
-        log(content ? '✓ Applied context archives prompt (before chat history + before batch summaries)' : '✓ Cleared context archives prompt (none assigned)');
     } catch (e) {
         console.error('[Summarizer] Failed to update context archives prompt:', e);
     }
