@@ -19,7 +19,6 @@ import {
 
 export const MODULE_NAME = 'summarizer';
 
-const log = (...args) => console.log('[Summarizer]', ...args);
 const logError = (...args) => console.error('[Summarizer]', ...args);
 
 // Default settings
@@ -176,7 +175,6 @@ export function initSettings() {
             }
         }
         extension_settings[MODULE_NAME]._migratedFromVM = true;
-        log('Migrated prompt placement settings from VerseManager');
     }
 
     saveSettingsDebounced();
@@ -468,7 +466,6 @@ export async function setComprehensiveSummary(summaryData) {
 
     try {
         await setSummary(chatFilename, summaryObject);
-        log('Comprehensive summary saved successfully');
         return summaryObject;
     } catch (error) {
         logError('Failed to save comprehensive summary:', error);
@@ -484,7 +481,6 @@ export async function updateComprehensiveSummary(updates) {
 
     try {
         const result = await updateSummary(chatFilename, updates);
-        if (result) log('Comprehensive summary updated');
         return result;
     } catch (error) {
         logError('Failed to update comprehensive summary:', error);
@@ -499,7 +495,6 @@ export async function clearComprehensiveSummary() {
     const chatFilename = getCurrentChatFilename();
     try {
         await deleteSummary(chatFilename);
-        log('Comprehensive summary cleared');
     } catch (error) {
         logError('Failed to clear comprehensive summary:', error);
     }
@@ -519,7 +514,7 @@ export function fullReset() {
     saveMetadataDebounced();
 
     // Also clear the file-based comprehensive summary
-    clearComprehensiveSummary().catch(e => logError('Failed to clear comprehensive on full reset:', e));
+    clearComprehensiveSummary().catch(() => {});
 }
 
 // ============================================================
@@ -632,7 +627,6 @@ export function getMessageExclusionCount(chatLength) {
     const maxExclude = Math.max(0, chatLength - MIN_KEEP);
     const excludeCount = Math.min(coveredUpTo, maxExclude);
 
-    log(`Message exclusion: chat=${chatLength}, threshold=${threshold}, summarized covers 0–${coveredUpTo - 1}, excluding=${excludeCount}, keeping=${chatLength - excludeCount}`);
     return excludeCount;
 }
 

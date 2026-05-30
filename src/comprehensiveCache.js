@@ -7,14 +7,11 @@
 import { user_avatar } from '../../../../personas.js';
 import { getSummariesByVerse, getSummariesByStoryline } from './fileStore.js';
 
-const log = (...args) => console.log('[Summarizer Cache]', ...args);
-
 class ComprehensiveSummaryCache {
     constructor() {
         this.cache = new Map();
         this.currentVerseKey = null;
         this.currentPersona = null;
-        log('Initialized');
     }
 
     /**
@@ -26,7 +23,6 @@ class ComprehensiveSummaryCache {
 
         // Invalidate cache if context changed
         if (verseKey !== this.currentVerseKey || persona !== this.currentPersona) {
-            log('Context changed, clearing cache');
             this.cache.clear();
             this.currentVerseKey = verseKey;
             this.currentPersona = persona;
@@ -57,12 +53,10 @@ class ComprehensiveSummaryCache {
             }
         }
 
-        log(`Loaded ${results.length} summaries`);
         return results;
     }
 
     clear() {
-        log('Manually cleared');
         this.cache.clear();
         this.currentVerseKey = null;
         this.currentPersona = null;
@@ -87,6 +81,5 @@ export function destroyComprehensiveSummaryCache() {
     if (cacheInstance) {
         cacheInstance.clear();
         cacheInstance = null;
-        log('Destroyed');
     }
 }

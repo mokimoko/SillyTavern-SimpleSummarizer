@@ -8,7 +8,6 @@
  */
 import { getRequestHeaders } from '../../../../../script.js';
 
-const log = (...args) => console.log('[Summarizer FileStore]', ...args);
 const logError = (...args) => console.error('[Summarizer FileStore]', ...args);
 
 const FILENAME = 'archive_summarizer.json';
@@ -216,10 +215,7 @@ export async function deleteSummary(chatFilename) {
 export async function setVerseInfo(chatFilename, verseName, storylineName) {
     const store = await getStore();
     const summary = store.summaries[chatFilename];
-    if (!summary) {
-        log(`setVerseInfo: No summary found for ${chatFilename}, skipping`);
-        return;
-    }
+    if (!summary) return;
 
     summary.verse = verseName || null;
     summary.storyline = storylineName || null;

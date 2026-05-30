@@ -10,8 +10,6 @@ import { extension_settings, getContext, saveMetadataDebounced } from '../../../
 import { getStore, getSummary } from './fileStore.js';
 import { isEnabled, getBatches, MODULE_NAME, getSetting, getChatMetadata } from './storage.js';
 
-const log = (...args) => console.log('[Summarizer ContextArchives]', ...args);
-
 // ============================================================
 // Default config
 // ============================================================
@@ -97,13 +95,11 @@ export function assignArchive(chatFilename, label) {
 
     // Avoid duplicates
     if (ca.assigned.some(a => a.chatFilename === chatFilename)) {
-        log('Already assigned:', chatFilename);
         return false;
     }
 
     ca.assigned.push({ chatFilename, label });
     saveMetadataDebounced();
-    log('Assigned archive:', chatFilename);
     return true;
 }
 
@@ -116,7 +112,6 @@ export function removeArchive(chatFilename) {
 
     ca.assigned.splice(idx, 1);
     saveMetadataDebounced();
-    log('Removed archive:', chatFilename);
     return true;
 }
 

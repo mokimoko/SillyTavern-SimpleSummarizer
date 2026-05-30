@@ -15,7 +15,6 @@ import { extension_settings } from '../../../../extensions.js';
 import { getStore, setSummary, flushStore } from './fileStore.js';
 import { getSetting, setSetting, MODULE_NAME } from './storage.js';
 
-const log = (...args) => console.log('[Summarizer Migration]', ...args);
 const logError = (...args) => console.error('[Summarizer Migration]', ...args);
 
 /**
@@ -42,17 +41,13 @@ function getVerseNames() {
 export async function runLegacyMigration() {
     const archiveStore = window.VerseManager?.archiveStore;
     if (!archiveStore?.getSection) {
-        log('No archive store API found — skipping migration');
         return { scanned: 0, migrated: 0, skipped: 0, errors: 0 };
     }
 
     // Check gate flag
     if (extension_settings[MODULE_NAME]?.legacyMigrationDone) {
-        log('Legacy migration already completed — skipping');
         return { scanned: 0, migrated: 0, skipped: 0, errors: 0 };
     }
-
-    log('Starting legacy migration from VM archive store...');
 
     const verseNames = getVerseNames();
     const store = await getStore();
@@ -108,17 +103,11 @@ export async function runLegacyMigration() {
     // Set gate flag to prevent re-running
     setSetting('legacyMigrationDone', true);
 
-    log('Legacy migration complete:', results);
-
     if (results.migrated > 0) {
         toastr.success(
             `Migrated ${results.migrated} comprehensive summaries from VerseManager`,
             'Summarizer',
         );
-    } else if (results.scanned > 0) {
-        log(`All ${results.scanned} summaries already present — nothing to migrate`);
-    } else {
-        log('No summaries found in VM archives');
     }
 
     return results;

@@ -31,8 +31,6 @@ import {
     getArchivePool, isContextArchivesEnabled, setContextArchivesEnabled,
 } from './contextArchives.js';
 
-const log = (...args) => console.log('[Summarizer Modal]', ...args);
-
 // ============================================================
 // State
 // ============================================================
@@ -72,8 +70,6 @@ export function openSummarizerModal(tab = null) {
         document.getElementById(OVERLAY_ID)?.classList.add('ss-visible');
         document.getElementById(MODAL_ID)?.classList.add('ss-visible');
     });
-
-    log('Modal opened');
 }
 
 export function closeSummarizerModal() {
@@ -83,7 +79,6 @@ export function closeSummarizerModal() {
     document.getElementById(MODAL_ID)?.classList.remove('ss-visible');
 
     isOpen = false;
-    log('Modal closed');
 }
 
 // ============================================================

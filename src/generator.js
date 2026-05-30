@@ -355,7 +355,6 @@ async function callLLM(prompt, skipProfileSwitch = false) {
                     : null;
 
                 if (resolvedProfile) {
-                    console.log('[Summarizer] Using CMRS for generation (profile:', resolvedProfile.name || resolvedProfile.id, ')');
                     // Retry once on transient failures
                     for (let attempt = 0; attempt < 2; attempt++) {
                         try {
@@ -387,16 +386,14 @@ async function callLLM(prompt, skipProfileSwitch = false) {
             const result = await switchToProfileWithConfirmation(connectionProfile);
             if (result.success) {
                 originalProfile = result.originalProfile;
-                console.log('[Summarizer] Profile switched for fallback generation');
             } else {
-                console.warn('[Summarizer] Profile switch failed, using current profile:', result.error);
+                console.warn('[Summarizer] Profile switch failed:', result.error);
             }
         }
 
         let lastError = null;
         for (let attempt = 0; attempt < 2; attempt++) {
             try {
-                console.log('[Summarizer] Using generateQuietPrompt (fallback path)');
                 const response = await generateQuietPrompt({
                     quietPrompt: prompt,
                     quietName: 'Summarizer',
@@ -450,7 +447,6 @@ export async function generateBatchSummary(startIndex, endIndex, batchIndex, ski
     // Detect other speakers
     const charName = context.characters?.[context.characterId]?.name || 'Character';
     const otherSpeakers = getOtherSpeakers(messages, charName);
-    if (otherSpeakers.length > 0) console.log('Summarizer: Detected other speakers in batch:', otherSpeakers);
 
     let prompt;
     if (batchType === 'establishment') {
@@ -522,8 +518,6 @@ export async function processUnprocessedBatches(onProgress = null, skipProfileSw
     const chatLength = effectiveChatLength ?? chat.length;
     const completeBatches = Math.floor(chatLength / batchSize);
 
-    console.log(`[Summarizer] processUnprocessedBatches: chatLength=${chatLength} (actual=${chat.length}), batchSize=${batchSize}, completeBatches=${completeBatches}`);
-
     let consecutiveFailures = 0;
     const MAX_CONSECUTIVE_FAILURES = 2;
 
@@ -594,15 +588,6 @@ export async function generateComprehensive(skipProfileSwitch = false) {
     const charName = context.characters?.[context.characterId]?.name || 'Character';
     const otherSpeakers = getOtherSpeakers(chat.filter(m => !m.is_disabled), charName);
     const pinnedQuotes = getPinnedQuotes();
-
-    console.log('Comprehensive summary including:', {
-        batches: batches.length,
-        firstMessages: firstMessages.length,
-        trailingMessages: trailingMessages.length,
-        totalChatLength: chat.length,
-        otherSpeakers,
-        pinnedQuotes: pinnedQuotes.length,
-    });
 
     const prompt = buildComprehensivePrompt(batches, firstMessages, trailingMessages, otherSpeakers, pinnedQuotes);
     const response = await callLLM(prompt, skipProfileSwitch);
