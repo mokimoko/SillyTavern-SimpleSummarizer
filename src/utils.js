@@ -1,9 +1,49 @@
 /**
  * utils.js — Shared utilities for Summarizer (standalone)
- * Profile switching with polling confirmation.
+ * Profile switching with polling confirmation + group chat detection.
  */
+import { getContext } from '../../../../extensions.js';
 
 let profileSwitchInProgress = false;
+
+// ============================================================
+// Group chat detection
+// ============================================================
+
+/**
+ * Check if the current chat is a group chat.
+ * @returns {boolean}
+ */
+export function isGroupChat() {
+    return !!getContext().groupId;
+}
+
+/**
+ * Get group info for the current chat. Returns null if not a group chat.
+ * @returns {{groupId: string, groupName: string, members: Array<{name: string, avatar: string}>, disabledMembers: string[]}|null}
+ */
+export function getGroupInfo() {
+    const context = getContext();
+    if (!context.groupId) return null;
+
+    const group = context.groups?.find(g => g.id === context.groupId);
+    if (!group || !Array.isArray(group.members)) return null;
+
+    const members = group.members
+        .filter(avatar => !group.disabled_members?.includes(avatar))
+        .map(avatar => {
+            const char = context.characters?.find(c => c.avatar === avatar);
+            return char ? { name: char.name, avatar: char.avatar } : null;
+        })
+        .filter(Boolean);
+
+    return {
+        groupId: group.id,
+        groupName: group.name,
+        members,
+        disabledMembers: group.disabled_members || [],
+    };
+}
 
 /**
  * Switch to a profile with polling confirmation

@@ -600,12 +600,17 @@
 }
 .ss-comp-quote-item {
     display: flex;
-    gap: 6px;
-    align-items: baseline;
+    flex-direction: column;
+    gap: 3px;
     padding: 5px 8px;
     background: rgba(255, 255, 255, 0.02);
     border: 1px solid rgba(255, 255, 255, 0.04);
     font-size: 12px;
+}
+.ss-comp-quote-main {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
 }
 .ss-comp-quote-speaker {
     font-weight: 600;
@@ -620,7 +625,6 @@
 .ss-comp-quote-ctx {
     color: rgba(255, 255, 255, 0.25);
     font-size: 11px;
-    white-space: nowrap;
 }
 
 .ss-comp-footer {
@@ -836,6 +840,79 @@
     color: rgba(220, 180, 140, 1);
 }
 
+/* ─── Archive Filters ─────────────────────────────── */
+
+.ss-archive-filters {
+    margin-bottom: 10px;
+}
+
+.ss-archive-filter-row {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+
+.ss-archive-search-wrap {
+    flex: 1;
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+.ss-archive-search-wrap i {
+    position: absolute;
+    left: 8px;
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.25);
+    pointer-events: none;
+}
+.ss-archive-search {
+    width: 100%;
+    padding: 6px 8px 6px 28px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.8);
+    font-size: 12px;
+    font-family: inherit;
+    box-sizing: border-box;
+}
+.ss-archive-search:focus {
+    outline: none;
+    border-color: rgba(180, 160, 140, 0.4);
+}
+.ss-archive-search::placeholder {
+    color: rgba(255, 255, 255, 0.25);
+}
+
+.ss-archive-char-select {
+    width: 160px;
+    flex-shrink: 0;
+}
+
+.ss-archive-results-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.3);
+    min-height: 18px;
+}
+
+.ss-archive-clear-filters {
+    background: none;
+    border: none;
+    color: rgba(180, 160, 140, 0.6);
+    font-size: 11px;
+    font-family: inherit;
+    cursor: pointer;
+    padding: 0;
+    text-decoration: underline;
+    text-decoration-color: rgba(180, 160, 140, 0.3);
+    transition: color 0.15s;
+}
+.ss-archive-clear-filters:hover {
+    color: rgba(180, 160, 140, 0.9);
+}
+
 /* ─── Responsive ──────────────────────────────────── */
 
 @media (max-width: 640px) {
@@ -856,4 +933,6 @@
     }
     .ss-batch-card-actions { opacity: 1; }
     .ss-pinned-item-actions { opacity: 1; }
+    .ss-archive-filter-row { flex-direction: column; }
+    .ss-archive-char-select { width: 100%; }
 }

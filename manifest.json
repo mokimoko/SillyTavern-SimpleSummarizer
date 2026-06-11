@@ -1,13 +1,13 @@
 {
-  "display_name": "Summarizer",
+  "display_name": "Simple Summarizer",
   "loading_order": 1,
   "generate_interceptor": "summarizer_intercept_messages",
   "requires": [],
   "optional": [],
   "js": "index.js",
   "css": "style.css",
-  "author": "nrahis",
+  "author": "mokimoko",
   "version": "1.0.0",
-  "homePage": "https://github.com/nrahis/SillyTavern-Summarizer",
+  "homePage": "https://github.com/mokimoko/SillyTavern-SimpleSummarizer",
   "auto_update": false
 }
