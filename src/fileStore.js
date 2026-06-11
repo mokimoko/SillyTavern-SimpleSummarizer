@@ -210,45 +210,6 @@ export async function deleteSummary(chatFilename) {
 }
 
 /**
- * Set verse/storyline tags on a summary (VM integration).
- */
-export async function setVerseInfo(chatFilename, verseName, storylineName) {
-    const store = await getStore();
-    const summary = store.summaries[chatFilename];
-    if (!summary) return;
-
-    summary.verse = verseName || null;
-    summary.storyline = storylineName || null;
-    store.lastModified = new Date().toISOString();
-    scheduleSave(store);
-}
-
-/**
- * Clear verse/storyline tags from a summary.
- */
-export async function clearVerseInfo(chatFilename) {
-    return setVerseInfo(chatFilename, null, null);
-}
-
-/**
- * Get all summaries tagged with a given verse name.
- */
-export async function getSummariesByVerse(verseName) {
-    const store = await getStore();
-    return Object.values(store.summaries).filter(s => s.verse === verseName);
-}
-
-/**
- * Get all summaries tagged with a given storyline within a verse.
- */
-export async function getSummariesByStoryline(verseName, storylineId) {
-    const store = await getStore();
-    return Object.values(store.summaries).filter(
-        s => s.verse === verseName && s.storyline === storylineId,
-    );
-}
-
-/**
  * Force an immediate save (for critical writes).
  */
 export async function flushStore() {

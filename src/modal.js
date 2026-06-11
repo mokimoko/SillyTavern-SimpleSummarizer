@@ -8,6 +8,7 @@
  * - CSS class prefix: ss-
  */
 import { getContext } from '../../../../extensions.js';
+import { tags, tag_map } from '../../../../tags.js';
 import {
     getBatches, getBatch, updateBatch, deleteBatch, clearAllBatches,
     getSetting, setSetting, getPromptSettings, setPromptSetting,
@@ -37,6 +38,11 @@ import {
 
 let isOpen = false;
 let activeTab = 'batches';
+
+// Archive filter state (persists while modal is open)
+let archiveSearchText = '';
+let archiveCharFilter = '';
+let cachedArchiveData = null;
 
 const MODAL_ID = 'ss-modal';
 const OVERLAY_ID = 'ss-overlay';
@@ -77,6 +83,11 @@ export function closeSummarizerModal() {
 
     document.getElementById(OVERLAY_ID)?.classList.remove('ss-visible');
     document.getElementById(MODAL_ID)?.classList.remove('ss-visible');
+
+    // Reset archive filters
+    archiveSearchText = '';
+    archiveCharFilter = '';
+    cachedArchiveData = null;
 
     isOpen = false;
 }
@@ -380,9 +391,11 @@ async function renderComprehensiveTab(container) {
 function renderCompQuoteItem(quote, idx) {
     return `
         <div class="ss-comp-quote-item" data-index="${idx}">
-            <span class="ss-comp-quote-speaker">${quote.speaker}</span>
-            <span class="ss-comp-quote-text">"${quote.text}"</span>
-            ${quote.context ? `<span class="ss-comp-quote-ctx">${quote.context}</span>` : ''}
+            <div class="ss-comp-quote-main">
+                <span class="ss-comp-quote-speaker">${quote.speaker}</span>
+                <span class="ss-comp-quote-text">"${quote.text}"</span>
+            </div>
+            ${quote.context ? `<div class="ss-comp-quote-ctx">${quote.context}</div>` : ''}
         </div>`;
 }
 
@@ -408,6 +421,93 @@ function wireComprehensiveEvents(container, comp) {
 }
 
 // ============================================================
+// Archive Filtering
+// ============================================================
+
+/**
+ * Get lowercase tag names for a character avatar via ST's tag system.
+ */
+function getTagNamesForAvatar(avatar) {
+    if (!avatar || !tag_map[avatar]) return [];
+    return tag_map[avatar]
+        .map(tagId => tags.find(t => t.id === tagId))
+        .filter(t => t)
+        .map(t => t.name.toLowerCase());
+}
+
+/**
+ * Apply search + character filters to archive entries.
+ * Search matches against: character name, chat filename, summary text, and tag names.
+ * Multiple search terms use AND logic (every term must hit at least one field).
+ */
+function applyArchiveFilters(entries) {
+    let filtered = entries;
+
+    // Character avatar filter
+    if (archiveCharFilter) {
+        filtered = filtered.filter(([, data]) =>
+            data.metadata?.character?.avatar === archiveCharFilter,
+        );
+    }
+
+    // Unified text search (words + tags in one field)
+    if (archiveSearchText) {
+        const terms = archiveSearchText.toLowerCase().split(/\s+/).filter(t => t);
+        filtered = filtered.filter(([filename, data]) => {
+            const charName = (data.metadata?.character?.displayName
+                || data.metadata?.character?.name || '').toLowerCase();
+            const label = filename.replace(/\.jsonl$/i, '').replace(/_/g, ' ').toLowerCase();
+            const text = (data.text || '').toLowerCase();
+            const tagNames = getTagNamesForAvatar(data.metadata?.character?.avatar);
+
+            return terms.every(term =>
+                charName.includes(term)
+                || label.includes(term)
+                || text.includes(term)
+                || tagNames.some(tn => tn.includes(term)),
+            );
+        });
+    }
+
+    return filtered;
+}
+
+/**
+ * Refresh just the archive list + results count without rebuilding the filter bar.
+ * Preserves input focus during typing.
+ */
+function refreshArchiveList(container) {
+    if (!cachedArchiveData) return;
+    const { entries, assignedSet, hasChat } = cachedArchiveData;
+
+    const filtered = applyArchiveFilters(entries);
+    const isFiltered = !!(archiveSearchText || archiveCharFilter);
+    const resultText = isFiltered
+        ? `${filtered.length} of ${entries.length}`
+        : `${entries.length} total`;
+
+    // Update list
+    const listEl = container.querySelector('#ss-archives-list');
+    if (listEl) {
+        listEl.innerHTML = filtered.length === 0
+            ? `<div class="ss-empty">${entries.length === 0
+                ? 'No comprehensive summaries stored yet'
+                : 'No summaries match your filters'}</div>`
+            : filtered.map(([filename, data]) =>
+                renderArchiveRow(filename, data, assignedSet, hasChat)).join('');
+    }
+
+    // Update results info
+    const infoEl = container.querySelector('#ss-archive-results-info');
+    if (infoEl) {
+        infoEl.innerHTML = `
+            <span class="ss-archive-results-count">${resultText}</span>
+            ${isFiltered ? '<button class="ss-archive-clear-filters" id="ss-archive-clear-filters">Clear</button>' : ''}
+        `;
+    }
+}
+
+// ============================================================
 // Tab: Archives
 // ============================================================
 
@@ -420,6 +520,31 @@ async function renderArchivesTab(container) {
     const hasChat = !!(context?.chatId);
     const caAssigned = hasChat ? getAssignedArchives() : [];
     const assignedSet = new Set(caAssigned.map(a => a.chatFilename));
+
+    // Cache for filter refresh (avoids re-fetching store on every keystroke)
+    cachedArchiveData = { allSummaries, entries, assignedSet, hasChat };
+
+    // Collect unique characters for the dropdown
+    const charMap = new Map();
+    for (const [, data] of entries) {
+        const avatar = data.metadata?.character?.avatar;
+        const name = data.metadata?.character?.displayName || data.metadata?.character?.name;
+        if (avatar && name && !charMap.has(avatar)) {
+            charMap.set(avatar, name);
+        }
+    }
+    const charOptions = [...charMap.entries()]
+        .sort((a, b) => a[1].localeCompare(b[1]))
+        .map(([avatar, name]) =>
+            `<option value="${escapeAttr(avatar)}" ${archiveCharFilter === avatar ? 'selected' : ''}>${escapeHtml(name)}</option>`)
+        .join('');
+
+    // Apply current filters
+    const filtered = applyArchiveFilters(entries);
+    const isFiltered = !!(archiveSearchText || archiveCharFilter);
+    const resultText = isFiltered
+        ? `${filtered.length} of ${entries.length}`
+        : `${entries.length} total`;
 
     container.innerHTML = `
         <div class="ss-tab-header">
@@ -451,10 +576,32 @@ async function renderArchivesTab(container) {
         ` : ''}
         <div class="ss-archives-section">
             <div class="ss-section-label">All Stored Summaries</div>
+            ${entries.length > 0 ? `
+                <div class="ss-archive-filters" id="ss-archive-filters">
+                    <div class="ss-archive-filter-row">
+                        <div class="ss-archive-search-wrap">
+                            <i class="fa-solid fa-magnifying-glass"></i>
+                            <input type="text" class="ss-archive-search" id="ss-archive-search"
+                                   placeholder="Search text, characters, tags..."
+                                   value="${escapeAttr(archiveSearchText)}">
+                        </div>
+                        <select class="ss-select ss-archive-char-select" id="ss-archive-char-select">
+                            <option value="">All Characters</option>
+                            ${charOptions}
+                        </select>
+                    </div>
+                    <div class="ss-archive-results-info" id="ss-archive-results-info">
+                        <span class="ss-archive-results-count">${resultText}</span>
+                        ${isFiltered ? '<button class="ss-archive-clear-filters" id="ss-archive-clear-filters">Clear</button>' : ''}
+                    </div>
+                </div>
+            ` : ''}
             <div class="ss-archives-list" id="ss-archives-list">
-                ${entries.length === 0
-                    ? '<div class="ss-empty">No comprehensive summaries stored yet</div>'
-                    : entries.map(([filename, data]) => renderArchiveRow(filename, data, assignedSet, hasChat)).join('')}
+                ${filtered.length === 0
+                    ? `<div class="ss-empty">${entries.length === 0
+                        ? 'No comprehensive summaries stored yet'
+                        : 'No summaries match your filters'}</div>`
+                    : filtered.map(([filename, data]) => renderArchiveRow(filename, data, assignedSet, hasChat)).join('')}
             </div>
         </div>
     `;
@@ -507,7 +654,32 @@ function wireArchivesEvents(container) {
         }
     });
 
-    // All summaries list: assign
+    // ── Filter: search input ──
+    container.querySelector('#ss-archive-search')?.addEventListener('input', (e) => {
+        archiveSearchText = e.target.value;
+        refreshArchiveList(container);
+    });
+
+    // ── Filter: character dropdown ──
+    container.querySelector('#ss-archive-char-select')?.addEventListener('change', (e) => {
+        archiveCharFilter = e.target.value;
+        refreshArchiveList(container);
+    });
+
+    // ── Filter: clear button (delegated on filters container) ──
+    container.querySelector('#ss-archive-filters')?.addEventListener('click', (e) => {
+        if (e.target.closest('#ss-archive-clear-filters')) {
+            archiveSearchText = '';
+            archiveCharFilter = '';
+            const searchInput = container.querySelector('#ss-archive-search');
+            const charSelect = container.querySelector('#ss-archive-char-select');
+            if (searchInput) searchInput.value = '';
+            if (charSelect) charSelect.value = '';
+            refreshArchiveList(container);
+        }
+    });
+
+    // ── All summaries list: assign (delegated — survives list refreshes) ──
     container.querySelector('#ss-archives-list')?.addEventListener('click', (e) => {
         const assignBtn = e.target.closest('.ss-archive-assign');
         if (!assignBtn) return;

@@ -4,14 +4,14 @@
  * Batch-based chat summarization with comprehensive summaries,
  * memorable quotes, prompt injection, macros, and auto-processing.
  * 
- * Works fully standalone. Exposes window.Summarizer API for VM integration.
+ * Works fully standalone.
  */
 import { eventSource, event_types, saveSettingsDebounced, streamingProcessor } from '../../../../script.js';
 import { getContext } from '../../../extensions.js';
 import { SlashCommand } from '../../../slash-commands/SlashCommand.js';
 import { SlashCommandParser } from '../../../slash-commands/SlashCommandParser.js';
 
-import { initFileStore, getSummary as getFileSummary, setVerseInfo, clearVerseInfo, getSummariesByVerse, getSummariesByStoryline } from './src/fileStore.js';
+import { initFileStore, getSummary as getFileSummary } from './src/fileStore.js';
 import {
     initSettings, getSetting, isEnabled, toggleEnabled, getBatches, getUnprocessedBatches,
     clearAllBatches, fullReset, getComprehensiveSummary, markBatchRangeDirty,
@@ -27,7 +27,6 @@ import {
 } from './src/promptInjection.js';
 import { updateBatchVisuals, showProgressDialog, showIndeterminateProgress } from './src/ui.js';
 import { openSummarizerModal, closeSummarizerModal } from './src/modal.js';
-import { runLegacyMigration } from './src/legacyMigration.js';
 import {
     getConfig as getCAConfig, setConfig as setCAConfig,
     getPlacementConfig as getCAPlacement, setPlacementConfig as setCAPlacement,
@@ -235,11 +234,6 @@ function registerEventHandlers() {
             return;
         }
 
-        // Bail if agents are running
-        if (window.VerseManager?.agents?.isAgentRunActive?.()) {
-            return;
-        }
-
         // Quick check: are there even batches to process?
         const batchSize = getSetting('batchSize');
         const autoBuffer = getSetting('autoBuffer') || 0;
@@ -254,7 +248,6 @@ function registerEventHandlers() {
             // Re-check guards after the yield
             if (isSummarizerRunning) return;
             if (streamingProcessor && !streamingProcessor.isFinished) return;
-            if (window.VerseManager?.agents?.isAgentRunActive?.()) return;
 
             isSummarizerRunning = true;
             try {
@@ -430,22 +423,15 @@ async function registerMacros() {
 }
 
 // ============================================================
-// VM Detection (APP_READY)
+// Prompt setup (APP_READY)
 // ============================================================
 
-function detectVM() {
-    // Always apply standalone prompts (hardcoded placement)
+function applyStandalonePrompts() {
+    // Apply standalone prompts (hardcoded placement)
     applySummarizerPrompt();
     updateSummarizerPromptContent();
     applyContextArchivesPrompt();
     updateContextArchivesPromptContent();
-
-    // Legacy migration: copy VM archive summaries → standalone fileStore
-    if (window.VerseManager?.archiveStore) {
-        runLegacyMigration().catch(e => {
-            console.error('[Summarizer] Legacy migration failed:', e);
-        });
-    }
 }
 
 // ============================================================
@@ -500,15 +486,9 @@ function exposePublicAPI() {
         getPinnedQuotes,
         getPinnedQuoteCount,
 
-        // Generation (for VM's continueChat etc.)
+        // Generation
         processUnprocessedBatches,
         generateComprehensive,
-
-        // VM integration (tagging)
-        setVerseInfo,
-        clearVerseInfo,
-        getSummariesByVerse,
-        getSummariesByStoryline,
 
         // Prompt management
         applySummarizerPrompt,
@@ -563,30 +543,24 @@ jQuery(async () => {
     // Add extension button to input area
     setupInputButton();
 
-    // Expose API immediately (VM may need it on APP_READY)
+    // Expose API immediately
     exposePublicAPI();
 
     // Initialize macro cache
     updateMacroCache();
 
-    // Detect VM — event-driven with fallback for when VM isn't installed.
-    // VM emits 'VM_SETTINGS_READY' after its settings modal + core sections are registered.
-    let vmDetected = false;
-    const runDetect = () => {
-        if (vmDetected) return;
-        vmDetected = true;
-        detectVM();
+    // Apply standalone prompts once the app is ready.
+    let promptsApplied = false;
+    const runApply = () => {
+        if (promptsApplied) return;
+        promptsApplied = true;
+        applyStandalonePrompts();
     };
 
     if (event_types.APP_READY) {
-        eventSource.on('VM_SETTINGS_READY', runDetect);
-        eventSource.on(event_types.APP_READY, () => {
-            // Fallback: if VM isn't installed, no VM_SETTINGS_READY will fire.
-            // Give a short grace period then run standalone detection.
-            setTimeout(runDetect, 2000);
-        });
+        eventSource.on(event_types.APP_READY, runApply);
     } else {
-        setTimeout(runDetect, 2000);
+        setTimeout(runApply, 2000);
     }
 
     initialized = true;

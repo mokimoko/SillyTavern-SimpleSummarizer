@@ -4,12 +4,13 @@
  * Batch summaries: chat_metadata.summarizer (ST-native, no change)
  * Comprehensive summaries: archive_summarizer.json via fileStore.js
  * 
- * Primary key is always chat filename — stable regardless of VM.
+ * Primary key is always chat filename.
  */
 import { chat_metadata, saveSettingsDebounced } from '../../../../../script.js';
 import { extension_settings, saveMetadataDebounced, getContext } from '../../../../extensions.js';
 import { user_avatar } from '../../../../personas.js';
 import { power_user } from '../../../../power-user.js';
+import { getGroupInfo } from './utils.js';
 import {
     getSummary,
     setSummary,
@@ -97,29 +98,46 @@ function getCurrentChatFilename() {
 }
 
 /**
- * Get current character and persona metadata for comprehensive summaries
+ * Get current character and persona metadata for comprehensive summaries.
+ * Group-aware: stores all members when in a group chat.
  */
 export function getCurrentChatMetadata() {
     const context = getContext();
+    const groupInfo = getGroupInfo();
 
-    // Get current character
+    // Get character(s) metadata
     let characterMeta = null;
-    const character = context.characters?.[context.characterId];
 
-    if (character) {
-        const allChars = context.characters.filter(c => c.name && c.avatar);
-        const nameCounts = {};
-        allChars.forEach(c => {
-            nameCounts[c.name] = (nameCounts[c.name] || 0) + 1;
-        });
-
+    if (groupInfo) {
+        // Group mode: store all members as equal participants
         characterMeta = {
-            name: character.name,
-            avatar: character.avatar,
-            displayName: nameCounts[character.name] > 1
-                ? `${character.name} (${character.avatar})`
-                : character.name,
+            isGroup: true,
+            groupName: groupInfo.groupName,
+            groupId: groupInfo.groupId,
+            members: groupInfo.members.map(m => ({
+                name: m.name,
+                avatar: m.avatar,
+            })),
         };
+    } else {
+        // 1-on-1 mode: existing single-character logic
+        const character = context.characters?.[context.characterId];
+
+        if (character) {
+            const allChars = context.characters.filter(c => c.name && c.avatar);
+            const nameCounts = {};
+            allChars.forEach(c => {
+                nameCounts[c.name] = (nameCounts[c.name] || 0) + 1;
+            });
+
+            characterMeta = {
+                name: character.name,
+                avatar: character.avatar,
+                displayName: nameCounts[character.name] > 1
+                    ? `${character.name} (${character.avatar})`
+                    : character.name,
+            };
+        }
     }
 
     // Get current persona
@@ -163,18 +181,6 @@ export function initSettings() {
             extension_settings[MODULE_NAME].prompt || {},
         );
         extension_settings[MODULE_NAME] = merged;
-    }
-
-    // One-time fallback: read from VM settings if they exist and ours don't
-    const vmSettings = extension_settings['verseManager']?.summarizer;
-    if (vmSettings && !extension_settings[MODULE_NAME]._migratedFromVM) {
-        const promptKeys = ['includeInPrompts', 'promptRole', 'injectionPosition', 'injectionDepth', 'injectionOrder', 'placementAnchor', 'placementPosition'];
-        for (const key of promptKeys) {
-            if (vmSettings[key] !== undefined && extension_settings[MODULE_NAME].prompt[key] === default_settings.prompt[key]) {
-                extension_settings[MODULE_NAME].prompt[key] = vmSettings[key];
-            }
-        }
-        extension_settings[MODULE_NAME]._migratedFromVM = true;
     }
 
     saveSettingsDebounced();
@@ -395,10 +401,16 @@ export function getPinnedQuotes() {
                     batchId: batch.id,
                     batchIndex: batchIdx,
                     quoteIndex: quoteIdx,
+                    startIndex: batch.startIndex ?? 0,
                 });
             }
         });
     });
+
+    // Keep pinned quotes in chronological order even if the batches array
+    // isn't strictly ordered (e.g. after regeneration). Sort by the batch's
+    // message start index, then by quote position within the batch.
+    pinned.sort((a, b) => a.startIndex - b.startIndex || a.quoteIndex - b.quoteIndex);
 
     return pinned;
 }
@@ -459,9 +471,6 @@ export async function setComprehensiveSummary(summaryData) {
         lastGenerated: Date.now(),
         edited: false,
         basedOnBatches: getBatches().map(b => b.id),
-        // Verse/storyline tags — null when standalone, set by VM via API
-        verse: null,
-        storyline: null,
     };
 
     try {

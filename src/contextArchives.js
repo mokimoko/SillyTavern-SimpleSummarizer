@@ -2,7 +2,7 @@
  * contextArchives.js — Context Archives for Summarizer
  *
  * Assign comprehensive summaries from prior chats to inject into the current chat.
- * Pool of summaries from archive_summarizer.json, filtered by verse/character when VM present.
+ * Pool of summaries from archive_summarizer.json, optionally filtered by character.
  * Three token overflow strategies: priority, balanced, contextWeighted.
  */
 import { chat_metadata, chat, saveSettingsDebounced } from '../../../../../script.js';
@@ -139,7 +139,6 @@ export function moveArchive(chatFilename, direction) {
 /**
  * Get the pool of available comprehensive summaries for assignment.
  * @param {Object} options
- * @param {string} [options.verseFilter] - Filter to this verse name
  * @param {string} [options.characterFilter] - Filter to this character name
  * @returns {Promise<Array<{chatFilename, label, entry}>>}
  */
@@ -156,8 +155,17 @@ export async function getArchivePool(options = {}) {
         if (!entry?.text) continue;
 
         // Apply filters
-        if (options.verseFilter && entry.verse !== options.verseFilter) continue;
-        if (options.characterFilter && entry.metadata?.character?.name !== options.characterFilter) continue;
+        if (options.characterFilter) {
+            const charMeta = entry.metadata?.character;
+            if (charMeta?.isGroup) {
+                // Group: match if the filter name appears in any member
+                const memberNames = charMeta.members?.map(m => m.name) || [];
+                if (!memberNames.includes(options.characterFilter)) continue;
+            } else {
+                // 1-on-1: original check
+                if (charMeta?.name !== options.characterFilter) continue;
+            }
+        }
 
         const isCurrent = chatFilename === currentChatFilename;
         const label = formatArchiveLabel(chatFilename, entry, isCurrent);
@@ -181,14 +189,25 @@ export async function getArchivePool(options = {}) {
 
 /**
  * Format a display label for a comprehensive summary entry.
- * Format: "CharName — ChatFilename — ShortDate"
+ * Format: "CharName — ChatFilename — ShortDate" (1-on-1)
+ * Format: "GroupName (Alice, Bob) — ChatFilename — ShortDate" (group)
  */
 export function formatArchiveLabel(chatFilename, entry, isCurrent = false) {
-    // Character name
-    const charName = entry.metadata?.character?.displayName
-        || entry.metadata?.character?.name
-        || parseCharNameFromFilename(chatFilename)
-        || 'Unknown';
+    const charMeta = entry.metadata?.character;
+
+    // Character/group name
+    let charName;
+    if (charMeta?.isGroup) {
+        const memberList = charMeta.members?.map(m => m.name).join(', ') || '';
+        charName = charMeta.groupName
+            ? `${charMeta.groupName} (${memberList})`
+            : memberList || 'Group';
+    } else {
+        charName = charMeta?.displayName
+            || charMeta?.name
+            || parseCharNameFromFilename(chatFilename)
+            || 'Unknown';
+    }
 
     // Chat name: clean filename (strip .jsonl, shorten if needed)
     const chatName = chatFilename.replace(/\.jsonl$/i, '');
@@ -507,7 +526,8 @@ export async function buildContextArchivesContent() {
 }
 
 /**
- * Extract a shorter label for injection headers (strip chat filename portion if too long).
+ * Extract a shorter label for injection headers (strip chat filename portion).
+ * Works for both 1-on-1 ("CharName — ShortDate") and group ("GroupName (members) — ShortDate").
  */
 function extractShortLabel(label) {
     // Label format: "CharName — ChatFilename — ShortDate"

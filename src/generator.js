@@ -1,12 +1,9 @@
 /**
  * generator.js — LLM prompts + parsing for Summarizer (standalone)
- * 
- * Lifted directly from VM's summarizer/src/generator.js.
- * Only changes: import paths rewired to standalone storage/utils.
  */
 import { getContext } from '../../../../extensions.js';
 import { generateQuietPrompt } from '../../../../../script.js';
-import { switchToProfileWithConfirmation, restoreProfileWithConfirmation } from './utils.js';
+import { switchToProfileWithConfirmation, restoreProfileWithConfirmation, getGroupInfo } from './utils.js';
 import {
     getSetting,
     getBatches,
@@ -37,9 +34,26 @@ function getOtherSpeakers(messages, charName) {
 }
 
 /**
- * Build the quote attribution instructions, accounting for other characters
+ * Build the quote attribution instructions, accounting for other characters and group mode
  */
-function buildQuoteAttribution(otherSpeakers) {
+function buildQuoteAttribution(otherSpeakers, isGroup = false) {
+    if (isGroup) {
+        // Group mode: all character speakers are equal participants
+        if (otherSpeakers.length === 0) {
+            return `IMPORTANT: 
+- Use each character's actual name for quote attribution
+- Use exactly "USER:" for the user's quotes
+- Do NOT use "CHARACTER:" — always use the character's actual name`;
+        }
+
+        return `IMPORTANT: 
+- The following characters participate in this group conversation: ${otherSpeakers.join(', ')}
+- Use each character's ACTUAL NAME for quote attribution (e.g. "${otherSpeakers[0]}: \\"quote text\\" (context)")
+- Use exactly "USER:" for the user's quotes
+- Do NOT use "CHARACTER:" — always use the character's actual name`;
+    }
+
+    // 1-on-1 mode: original logic
     if (otherSpeakers.length === 0) {
         return `IMPORTANT: 
 - Use exactly "CHARACTER:" for the character's quotes
@@ -57,7 +71,7 @@ function buildQuoteAttribution(otherSpeakers) {
 /**
  * Build the establishment summary prompt (first batch)
  */
-function buildEstablishmentPrompt(messages, otherSpeakers = []) {
+function buildEstablishmentPrompt(messages, otherSpeakers = [], isGroup = false) {
     const length = getSetting('establishmentSummaryLength');
 
     let messagesText = messages.map((msg, i) => {
@@ -65,7 +79,7 @@ function buildEstablishmentPrompt(messages, otherSpeakers = []) {
         return `Message ${i + 1} (${speaker}):\n${msg.mes}`;
     }).join('\n\n');
 
-    const quoteAttribution = buildQuoteAttribution(otherSpeakers);
+    const quoteAttribution = buildQuoteAttribution(otherSpeakers, isGroup);
 
     return `You are a fact extractor for an ongoing roleplay. Your task is to record the key facts established in the opening messages of a story.
 
@@ -108,7 +122,7 @@ none
 /**
  * Build a regular batch summary prompt
  */
-function buildBatchPrompt(messages, batchIndex, previousSummaries, otherSpeakers = []) {
+function buildBatchPrompt(messages, batchIndex, previousSummaries, otherSpeakers = [], isGroup = false) {
     const length = getSetting('batchSummaryLength');
 
     let messagesText = messages.map((msg, i) => {
@@ -126,7 +140,7 @@ function buildBatchPrompt(messages, batchIndex, previousSummaries, otherSpeakers
         contextText += '\n';
     }
 
-    const quoteAttribution = buildQuoteAttribution(otherSpeakers);
+    const quoteAttribution = buildQuoteAttribution(otherSpeakers, isGroup);
 
     return `You are a fact extractor for an ongoing roleplay. Your task is to record the key facts and developments from batch ${batchIndex + 1}.
 
@@ -171,7 +185,7 @@ none
 /**
  * Build the comprehensive summary prompt
  */
-function buildComprehensivePrompt(batches, firstMessages, trailingMessages, otherSpeakers = [], pinnedQuotes = []) {
+function buildComprehensivePrompt(batches, firstMessages, trailingMessages, otherSpeakers = [], pinnedQuotes = [], isGroup = false) {
     const length = getDynamicComprehensiveLength();
 
     let firstMessagesText = '';
@@ -190,9 +204,12 @@ function buildComprehensivePrompt(batches, firstMessages, trailingMessages, othe
     }).join('\n\n');
 
     let allQuotes = [];
+    const pinnedTextSet = new Set(pinnedQuotes.map(pq => `${pq.speaker}::${pq.text}`));
     batches.forEach((batch, i) => {
         if (batch.quotes && batch.quotes.length > 0) {
             batch.quotes.forEach(quote => {
+                // Skip pinned quotes — they're shown separately in the PINNED QUOTES section
+                if (pinnedTextSet.has(`${quote.speaker}::${quote.text}`)) return;
                 allQuotes.push({ ...quote, sourceBatch: i + 1 });
             });
         }
@@ -215,7 +232,7 @@ function buildComprehensivePrompt(batches, firstMessages, trailingMessages, othe
         });
     }
 
-    const quoteAttribution = buildQuoteAttribution(otherSpeakers);
+    const quoteAttribution = buildQuoteAttribution(otherSpeakers, isGroup);
 
     // Adjust auto-pick count based on pinned quotes
     const autoPickCount = Math.max(0, 8 - pinnedQuotes.length);
@@ -285,7 +302,10 @@ function parseQuotes(quotesText) {
     if (!quotesText || quotesText.toLowerCase() === 'none') return quotes;
 
     const context = getContext();
-    const charName = context.characters?.[context.characterId]?.name || 'Character';
+    const groupInfo = getGroupInfo();
+
+    // In group mode, characterId is undefined — LLM should use actual names, not CHARACTER
+    const charName = groupInfo ? null : (context.characters?.[context.characterId]?.name || 'Character');
     const userName = context.name1 || 'User';
 
     const quoteLines = quotesText.split('\n').filter(line => line.trim());
@@ -294,7 +314,7 @@ function parseQuotes(quotesText) {
         const match = line.match(/^(.+?):\s*[""\u201C](.+?)[""\u201D]\s*(?:\((.+?)\))?$/);
         if (match) {
             let speaker = match[1].trim();
-            if (speaker === 'CHARACTER') speaker = charName;
+            if (speaker === 'CHARACTER' && charName) speaker = charName;
             if (speaker === 'USER') speaker = userName;
             quotes.push({
                 speaker,
@@ -444,13 +464,22 @@ export async function generateBatchSummary(startIndex, endIndex, batchIndex, ski
     }
     if (messages.length === 0) throw new Error('No messages found for batch');
 
-    // Detect other speakers
-    const charName = context.characters?.[context.characterId]?.name || 'Character';
-    const otherSpeakers = getOtherSpeakers(messages, charName);
+    // Detect group mode and speakers
+    const groupInfo = getGroupInfo();
+    const isGroup = !!groupInfo;
+    let otherSpeakers;
+
+    if (isGroup) {
+        // Group mode: all non-user speakers are equal participants (pass null to skip filtering)
+        otherSpeakers = getOtherSpeakers(messages, null);
+    } else {
+        const charName = context.characters?.[context.characterId]?.name || 'Character';
+        otherSpeakers = getOtherSpeakers(messages, charName);
+    }
 
     let prompt;
     if (batchType === 'establishment') {
-        prompt = buildEstablishmentPrompt(messages, otherSpeakers);
+        prompt = buildEstablishmentPrompt(messages, otherSpeakers, isGroup);
     } else {
         const lookBackCount = getSetting('lookBackBatches');
         const batches = getBatches();
@@ -458,7 +487,7 @@ export async function generateBatchSummary(startIndex, endIndex, batchIndex, ski
             .filter(b => b.startIndex < startIndex && b.summary && !b.dirty)
             .slice(-lookBackCount)
             .map((b) => ({ index: batches.indexOf(b), summary: b.summary }));
-        prompt = buildBatchPrompt(messages, batchIndex, previousBatches, otherSpeakers);
+        prompt = buildBatchPrompt(messages, batchIndex, previousBatches, otherSpeakers, isGroup);
     }
 
     const response = await callLLM(prompt, skipProfileSwitch);
@@ -585,20 +614,35 @@ export async function generateComprehensive(skipProfileSwitch = false) {
         }
     }
 
-    const charName = context.characters?.[context.characterId]?.name || 'Character';
-    const otherSpeakers = getOtherSpeakers(chat.filter(m => !m.is_disabled), charName);
+    const groupInfo = getGroupInfo();
+    const isGroup = !!groupInfo;
+    let otherSpeakers;
+
+    if (isGroup) {
+        otherSpeakers = getOtherSpeakers(chat.filter(m => !m.is_disabled), null);
+    } else {
+        const charName = context.characters?.[context.characterId]?.name || 'Character';
+        otherSpeakers = getOtherSpeakers(chat.filter(m => !m.is_disabled), charName);
+    }
+
     const pinnedQuotes = getPinnedQuotes();
 
-    const prompt = buildComprehensivePrompt(batches, firstMessages, trailingMessages, otherSpeakers, pinnedQuotes);
+    const prompt = buildComprehensivePrompt(batches, firstMessages, trailingMessages, otherSpeakers, pinnedQuotes, isGroup);
     const response = await callLLM(prompt, skipProfileSwitch);
     const parsed = parseResponse(response);
+
+    // Normalize a quote string for fuzzy dedup — lowercase, collapse whitespace,
+    // strip leading/trailing punctuation so minor LLM variations still match.
+    const normalizeQuote = (s) => (s || '').toLowerCase().replace(/[\s]+/g, ' ').replace(/[""''.,!?;:…—\-]+/g, '').trim();
+    const quoteKey = (speaker, text) => `${normalizeQuote(speaker)}::${normalizeQuote(text)}`;
 
     // Merge pinned quotes into the result: ensure all pinned quotes are present
     // even if the LLM missed them, and preserve their pinned flag
     const finalQuotes = [...parsed.quotes];
     for (const pq of pinnedQuotes) {
+        const pqKey = quoteKey(pq.speaker, pq.text);
         const alreadyIncluded = finalQuotes.some(q =>
-            q.text === pq.text && q.speaker === pq.speaker,
+            quoteKey(q.speaker, q.text) === pqKey,
         );
         if (!alreadyIncluded) {
             finalQuotes.push({
@@ -610,9 +654,9 @@ export async function generateComprehensive(skipProfileSwitch = false) {
     }
 
     // Mark which quotes in the final set are pinned
-    const pinnedTexts = new Set(pinnedQuotes.map(pq => `${pq.speaker}::${pq.text}`));
+    const pinnedKeys = new Set(pinnedQuotes.map(pq => quoteKey(pq.speaker, pq.text)));
     finalQuotes.forEach(q => {
-        if (pinnedTexts.has(`${q.speaker}::${q.text}`)) {
+        if (pinnedKeys.has(quoteKey(q.speaker, q.text))) {
             q.pinned = true;
         }
     });

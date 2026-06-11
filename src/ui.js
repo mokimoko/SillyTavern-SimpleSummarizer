@@ -1,7 +1,5 @@
 /**
  * ui.js — Batch visuals, dialogs, progress for Summarizer (standalone)
- * 
- * Lifted from VM's summarizer/src/ui.js with corrected import paths.
  */
 import { getContext } from '../../../../extensions.js';
 import {
