@@ -254,26 +254,23 @@ function buildComprehensivePrompt(batches, firstMessages, trailingMessages, othe
         quoteSelectionInstruction = `The user has pinned ${pinnedQuotes.length} quote(s) listed above — include ALL of them exactly as written. Do not select any additional quotes. Do not make up quotes.`;
     }
 
-    return `You are a fact extractor for a roleplay conversation. Your task is to produce a COMPREHENSIVE, CHRONOLOGICAL record of a long-form story or roleplay from batch summaries.
+    return `You are a story chronicler. Your task is to write a COMPREHENSIVE, CHRONOLOGICAL account of a long-form story or roleplay, synthesized from the batch summaries below. This account will be re-injected as background context into future stories, so another reader must be able to follow exactly what happened, to whom, and why, without having read the original.
 
-Think through these dimensions when synthesizing the full story:
-1. Setting — where did things take place across the story? Did locations change, did the characters move around?
-2. Characters — who are these people now compared to who they were at the start? What did we learn about them along the way?
-3. Situation — what's the through-line of events from beginning to present? What were the major turning points, the big decisions, the things that can't be undone?
-4. Relationships — how do these people feel about each other now? How did that change from the beginning? Who got closer, who drifted, who betrayed whom?
-5. World-building — what do we know about how this world works, accumulated across the whole story?
+As you synthesize, keep track of:
+1. The arc of events — what happened from beginning to present, the major turning points, the decisions and developments that shaped where things stand now.
+2. The characters — who they are, and how they changed over the course of the story.
+3. The relationships — how the characters feel about each other now, and how that shifted from where it began.
+4. The world — any established facts about how this world works that matter for understanding the story or continuing it.
 
 OUTPUT REQUIREMENTS:
-- Chronological order, earliest to latest.
-- Merge repeated or similar events into a single coherent progression.
-- Exclude conversational filler unless it meaningfully affected character dynamics or plot.
-- Do NOT invent events, motivations, or outcomes.
-- Output a single dense block of factual prose. No labels, no headers, no bullet points — just fact after fact. Every sentence should convey meaningful information. Do not narrate or dramatize — state what happened and what resulted.
+- Write in flowing narrative prose: complete, grammatical sentences organized into readable paragraphs, in chronological order from earliest to latest. This is a written account someone will read, NOT a list of extracted facts. Do not cram multiple unrelated facts into one sentence with dashes and semicolons — let each sentence breathe and connect naturally to the next.
+- Favor clarity of antecedent and cause. Name who did what and what resulted, so the chain of events is unambiguous when re-read later.
+- Include the details that carry weight — significant actions, revelations, shifts in how characters relate — and the texture that makes a moment land. Leave out incidental scenery and trivia (passing physical decor, food, small talk) unless it genuinely affected the plot or a relationship.
+- Merge repeated or similar beats into a single coherent progression rather than recounting each occurrence.
+- Stay faithful to what actually happened. Do NOT invent events, motivations, or outcomes, and do not dramatize beyond what the source supports.
 
-This comprehensive record will be used to provide context in other scenarios or when starting new related stories.
-
-Length requirement: ${length} (This length is based on the story's size - longer stories get more detail)
-If fewer meaningful facts exist, write fewer sentences. Never pad or invent details to fill the target length.
+Length requirement: ${length} (This is a guide based on the story's size — longer stories get more detail.)
+If fewer meaningful developments exist, write less. Never pad or invent to reach the target length.
 
 ${firstMessagesText}BATCH SUMMARIES:
 ${batchSummaries}${quotesSection}${pinnedQuotesSection}${trailingText}
@@ -358,7 +355,7 @@ function parseResponse(response) {
  *  3. skipProfileSwitch only controls the legacy manual-profile-switch
  *     fallback — it must NEVER gate the CMRS path.
  */
-async function callLLM(prompt, skipProfileSwitch = false) {
+async function callLLM(prompt, skipProfileSwitch = false, maxTokens = 4096) {
     const connectionProfile = getSetting('connectionProfile');
     let originalProfile = null;
 
@@ -380,7 +377,7 @@ async function callLLM(prompt, skipProfileSwitch = false) {
                         try {
                             const cmrsResult = await CMRS.sendRequest(resolvedProfile.id, [
                                 { role: 'user', content: prompt },
-                            ]);
+                            ], maxTokens);
                             const response = cmrsResult?.content
                                 || cmrsResult?.choices?.[0]?.message?.content
                                 || cmrsResult?.text
@@ -418,7 +415,7 @@ async function callLLM(prompt, skipProfileSwitch = false) {
                     quietPrompt: prompt,
                     quietName: 'Summarizer',
                     skipWIAN: true,
-                    responseLength: 4096,
+                    responseLength: maxTokens,
                 });
 
                 if (!response) throw new Error('Empty response from LLM');
@@ -628,7 +625,11 @@ export async function generateComprehensive(skipProfileSwitch = false) {
     const pinnedQuotes = getPinnedQuotes();
 
     const prompt = buildComprehensivePrompt(batches, firstMessages, trailingMessages, otherSpeakers, pinnedQuotes, isGroup);
-    const response = await callLLM(prompt, skipProfileSwitch);
+    // Comprehensive summaries are the longest output (up to 24-32 sentences plus
+    // 8 quotes for long stories). Give CMRS an explicit, generous token ceiling so
+    // the response isn't silently truncated by the connection profile's default,
+    // which would cut off the closing </summary> tag and cause a parse failure.
+    const response = await callLLM(prompt, skipProfileSwitch, 8192);
     const parsed = parseResponse(response);
 
     // Normalize a quote string for fuzzy dedup — lowercase, collapse whitespace,
