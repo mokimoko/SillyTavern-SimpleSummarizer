@@ -71,10 +71,10 @@ export function getDynamicComprehensiveLength() {
     const batches = getBatches().filter(b => !b.dirty && b.summary);
     const batchCount = batches.length;
 
-    if (batchCount < 10) return '8-12 concise factual sentences';
-    if (batchCount <= 20) return '12-18 concise factual sentences';
-    if (batchCount <= 30) return '18-24 concise factual sentences';
-    return '24-32 concise factual sentences';
+    if (batchCount < 10) return '8-12 sentences';
+    if (batchCount <= 20) return '12-18 sentences';
+    if (batchCount <= 30) return '18-24 sentences';
+    return '24-32 sentences';
 }
 
 /**
