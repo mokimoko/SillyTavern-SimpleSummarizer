@@ -19,6 +19,31 @@ import {
 } from './storage.js';
 
 /**
+ * Detect a message the user manually hid via the eye icon / `/hide`.
+ *
+ * In SillyTavern, the eye toggle (and `/hide`) only flips `message.is_system = true`
+ * and changes nothing else. But `is_system` is ALSO set on born-system messages
+ * like `/sys` narrator lines (extra.type === 'NARRATOR') and `/comment` lines
+ * (extra.type === 'COMMENT'). Those are legitimate story/system content we do NOT
+ * want to strip from summaries.
+ *
+ * So a genuinely user-hidden ("ghosted") message is one that is is_system BUT is
+ * not one of those born-system types. This keeps narrator/comment messages in the
+ * summary while excluding the char/user messages you ghosted with the eye.
+ *
+ * Caveat: if you ever hide a narrator/comment message with the eye, it can't be
+ * distinguished from an un-hidden one and will remain in the summary.
+ */
+function isUserHidden(msg) {
+    if (!msg || !msg.is_system) return false;
+    const t = msg.extra?.type;
+    if (t === 'narrator' || t === 'NARRATOR' || t === 'comment' || t === 'COMMENT') {
+        return false;
+    }
+    return true;
+}
+
+/**
  * Scan messages for speakers other than the main character and user
  */
 function getOtherSpeakers(messages, charName) {
@@ -36,7 +61,7 @@ function getOtherSpeakers(messages, charName) {
 /**
  * Build the quote attribution instructions, accounting for other characters and group mode
  */
-function buildQuoteAttribution(otherSpeakers, isGroup = false) {
+function buildQuoteAttribution(otherSpeakers, isGroup = false, charName = null) {
     if (isGroup) {
         // Group mode: all character speakers are equal participants
         if (otherSpeakers.length === 0) {
@@ -53,25 +78,33 @@ function buildQuoteAttribution(otherSpeakers, isGroup = false) {
 - Do NOT use "CHARACTER:" — always use the character's actual name`;
     }
 
-    // 1-on-1 mode: original logic
+    // 1-on-1 mode: attribute quotes by the speaker's actual in-story name.
+    // A single card can still portray multiple named characters (e.g. a
+    // "The Tully Brothers" card that voices both Ren and Alec), so we must
+    // NOT collapse everyone into one placeholder. The card name is only a
+    // fallback for lines that can't be pinned to a more specific speaker.
+    const cardFallback = charName
+        ? `\n- If a line clearly comes from this card but no more specific speaker name fits, attribute it to "${charName}".`
+        : '';
+
     if (otherSpeakers.length === 0) {
         return `IMPORTANT: 
-- Use exactly "CHARACTER:" for the character's quotes
-- Use exactly "USER:" for the user's quotes
-- Do NOT use actual character names in the quote attribution`;
+- Attribute each quote to the character who ACTUALLY said it, using their name exactly as it appears in the story (e.g. Ren: "quote text" (context)).
+- The "${charName}" card may portray more than one named character. If different named characters speak, attribute each quote to the specific one who said it — do NOT merge them under a single name.${cardFallback}
+- Use exactly "USER:" for the user's quotes.`;
     }
 
     return `IMPORTANT: 
-- Use exactly "CHARACTER:" for the MAIN character's quotes
-- Use exactly "USER:" for the user's quotes
-- The following additional characters also appear: ${otherSpeakers.join(', ')}. Use their ACTUAL NAMES for quote attribution (e.g. "${otherSpeakers[0]}: \\"quote text\\" (context)")
-- In the summary text, also refer to these additional characters by their actual names — do NOT fold them into the main character`;
+- Attribute each quote to the character who ACTUALLY said it, using their name exactly as it appears in the story (e.g. ${otherSpeakers[0]}: "quote text" (context)).
+- The "${charName}" card may portray more than one named character, and these additional characters also appear: ${otherSpeakers.join(', ')}. Attribute each quote to the specific speaker who said it — do NOT merge different characters under one name.${cardFallback}
+- In the summary text, refer to each character by their actual name — do NOT fold them together.
+- Use exactly "USER:" for the user's quotes.`;
 }
 
 /**
  * Build the establishment summary prompt (first batch)
  */
-function buildEstablishmentPrompt(messages, otherSpeakers = [], isGroup = false) {
+function buildEstablishmentPrompt(messages, otherSpeakers = [], isGroup = false, charName = null) {
     const length = getSetting('establishmentSummaryLength');
 
     let messagesText = messages.map((msg, i) => {
@@ -79,23 +112,22 @@ function buildEstablishmentPrompt(messages, otherSpeakers = [], isGroup = false)
         return `Message ${i + 1} (${speaker}):\n${msg.mes}`;
     }).join('\n\n');
 
-    const quoteAttribution = buildQuoteAttribution(otherSpeakers, isGroup);
+    const quoteAttribution = buildQuoteAttribution(otherSpeakers, isGroup, charName);
 
-    return `You are a fact extractor for an ongoing roleplay. Your task is to record the key facts established in the opening messages of a story.
+    return `Summarize the opening messages of this roleplay. This is the first summary, so record the starting facts the rest of the story builds on.
 
-This is the FIRST batch. Think through these dimensions when extracting:
-1. Setting — where are they? What does the place look like? What time is it, what's the weather, what's on the shelves? Concrete physical details that ground the scene.
-2. Characters — who's here? What do they look like, what are they wearing, what can they do? What's their deal — their job, their background, their personality as shown through action?
-3. Situation — what's actually happening right now? How did they get here? What's the problem or premise that kicked this off?
-4. Relationships — who are these people to each other? How are they treating each other? Is someone in charge, is someone uncomfortable, is someone lying?
-5. World-building — how does this world work? Is there magic, technology, hidden societies, rules about what's possible? Only include what's actually been established, not implications.
+Cover, in plain language:
+- Where and when the story takes place.
+- Who each character is: appearance, role, and personality shown so far.
+- The situation: what is happening and how it started.
+- How the characters relate to and treat each other.
+- Any established facts about how this world works (magic, technology, factions, abilities).
 
-Output a single dense block of factual prose. No labels, no headers, no bullet points — just fact after fact, grouped in the natural order above. Each sentence should state a distinct fact. Do not narrate, dramatize, or editorialize. If a dimension has nothing notable, skip it entirely.
+Only include what the messages actually establish. Write it as clear, factual prose in plain English. State each fact directly. Do not use figurative language, metaphors, or dramatic phrasing.
 
-Additionally, if you notice any particularly MEMORABLE or QUOTABLE lines (emotional peaks, character-defining moments, witty dialogue, dramatic reveals), extract them. Only include quotes that would be memorable if this were a book or movie. Include 0-3 quotes maximum - don't force it.
+Also list up to 3 memorable lines of dialogue if any stand out. If none do, write none.
 
-Length requirement: ${length}
-If fewer meaningful facts exist, write fewer sentences. Never pad or invent details to fill the target length.
+Length target: ${length}. If there is less to cover, write less.
 
 Messages to summarize:
 ${messagesText}
@@ -107,7 +139,7 @@ Your summary text here
 </summary>
 
 <quotes>
-CHARACTER: "Quote text" (Brief context)
+[Speaker name]: "Quote text" (Brief context)
 USER: "Another quote" (Brief context)
 </quotes>
 
@@ -122,7 +154,7 @@ none
 /**
  * Build a regular batch summary prompt
  */
-function buildBatchPrompt(messages, batchIndex, previousSummaries, otherSpeakers = [], isGroup = false) {
+function buildBatchPrompt(messages, batchIndex, previousSummaries, otherSpeakers = [], isGroup = false, charName = null) {
     const length = getSetting('batchSummaryLength');
 
     let messagesText = messages.map((msg, i) => {
@@ -140,25 +172,22 @@ function buildBatchPrompt(messages, batchIndex, previousSummaries, otherSpeakers
         contextText += '\n';
     }
 
-    const quoteAttribution = buildQuoteAttribution(otherSpeakers, isGroup);
+    const quoteAttribution = buildQuoteAttribution(otherSpeakers, isGroup, charName);
 
-    return `You are a fact extractor for an ongoing roleplay. Your task is to record the key facts and developments from batch ${batchIndex + 1}.
+    return `Summarize what happens in this batch of messages from an ongoing roleplay.
 
-${contextText}Record ONLY new facts from the messages below. Do not repeat anything from previous context.
+${contextText}The context above has already been summarized. Only summarize the new messages below; do not repeat the context.
 
-Think through these dimensions when extracting:
-1. Setting — did they go somewhere new? Did the environment change? New time of day, new location, new details about the space?
-2. Characters — did we learn something new about someone? New physical details, abilities, backstory, personality traits that weren't obvious before?
-3. Situation — what actually happened in these messages? What did people do, what did they decide, what went wrong or right? What information came to light?
-4. Relationships — did the way these people treat each other change? Did someone open up, shut down, betray someone, help someone? Are they closer or further apart than before, and why?
-5. World-building — did we learn new rules about how this world works? New lore, new factions, new limitations on what's possible?
+Write a clear, factual account of what happens, in the order it happens. Include:
+- What each character says and does, and what results from it.
+- Why they do it, when the reason is clear from the messages.
+- Any important change: a decision, a revelation, a lie, a location change, a shift in how two characters treat each other, or a new fact about the world.
 
-Output a single dense block of factual prose. No labels, no headers, no bullet points — just fact after fact, grouped in the natural order above. Each sentence should state a distinct fact. Do not narrate, dramatize, or pad with filler. If nothing changed in a dimension, skip it entirely.
+State events plainly, in your own words, as connected prose. Write in the past tense. Do not use metaphors, imagery, or dramatic phrasing. Do not editorialize about what things mean — just report what happened and why. Leave out minor physical detail (clothing, scenery, small gestures) unless it affects the plot or a relationship.
 
-Additionally, if you notice any particularly MEMORABLE or QUOTABLE lines (emotional peaks, character-defining moments, witty dialogue, dramatic reveals), extract them. Only include quotes that would be memorable if this were a book or movie. Include 0-3 quotes maximum - don't force it.
+Also list up to 3 memorable lines of dialogue if any stand out. If none do, write none.
 
-Length requirement: ${length}
-If fewer meaningful facts exist, write fewer sentences. Never pad or invent details to fill the target length.
+Length target: ${length}. If little happens, write less.
 
 Messages to summarize:
 ${messagesText}
@@ -170,7 +199,7 @@ Your summary of these NEW messages
 </summary>
 
 <quotes>
-CHARACTER: "Quote text" (Brief context)
+[Speaker name]: "Quote text" (Brief context)
 USER: "Another quote" (Brief context)
 </quotes>
 
@@ -185,7 +214,7 @@ none
 /**
  * Build the comprehensive summary prompt
  */
-function buildComprehensivePrompt(batches, firstMessages, trailingMessages, otherSpeakers = [], pinnedQuotes = [], isGroup = false) {
+function buildComprehensivePrompt(batches, firstMessages, trailingMessages, otherSpeakers = [], pinnedQuotes = [], isGroup = false, charName = null) {
     const length = getDynamicComprehensiveLength();
 
     let firstMessagesText = '';
@@ -232,7 +261,7 @@ function buildComprehensivePrompt(batches, firstMessages, trailingMessages, othe
         });
     }
 
-    const quoteAttribution = buildQuoteAttribution(otherSpeakers, isGroup);
+    const quoteAttribution = buildQuoteAttribution(otherSpeakers, isGroup, charName);
 
     // Adjust auto-pick count based on pinned quotes
     const autoPickCount = Math.max(0, 8 - pinnedQuotes.length);
@@ -254,23 +283,17 @@ function buildComprehensivePrompt(batches, firstMessages, trailingMessages, othe
         quoteSelectionInstruction = `The user has pinned ${pinnedQuotes.length} quote(s) listed above — include ALL of them exactly as written. Do not select any additional quotes. Do not make up quotes.`;
     }
 
-    return `You are a story chronicler. Your task is to write a COMPREHENSIVE, CHRONOLOGICAL account of a long-form story or roleplay, synthesized from the batch summaries below. This account will be re-injected as background context into future stories, so another reader must be able to follow exactly what happened, to whom, and why, without having read the original.
+    return `Write a complete summary of this roleplay so far, using the batch summaries below. Someone should be able to read it and understand everything that has happened without reading the original.
 
-As you synthesize, keep track of:
-1. The arc of events — what happened from beginning to present, the major turning points, the decisions and developments that shaped where things stand now.
-2. The characters — who they are, and how they changed over the course of the story.
-3. The relationships — how the characters feel about each other now, and how that shifted from where it began.
-4. The world — any established facts about how this world works that matter for understanding the story or continuing it.
+Write in plain, factual prose organized into paragraphs, in chronological order from start to present. Cover:
+- The main events, in order, and how the story got from its start to where it is now.
+- Who each character is and how they have changed.
+- How the characters relate to each other now, and how that changed from the beginning.
+- Any established facts about how this world works that matter for the story.
 
-OUTPUT REQUIREMENTS:
-- Write in flowing narrative prose: complete, grammatical sentences organized into readable paragraphs, in chronological order from earliest to latest. This is a written account someone will read, NOT a list of extracted facts. Do not cram multiple unrelated facts into one sentence with dashes and semicolons — let each sentence breathe and connect naturally to the next.
-- Favor clarity of antecedent and cause. Name who did what and what resulted, so the chain of events is unambiguous when re-read later.
-- Include the details that carry weight — significant actions, revelations, shifts in how characters relate — and the texture that makes a moment land. Leave out incidental scenery and trivia (passing physical decor, food, small talk) unless it genuinely affected the plot or a relationship.
-- Merge repeated or similar beats into a single coherent progression rather than recounting each occurrence.
-- Stay faithful to what actually happened. Do NOT invent events, motivations, or outcomes, and do not dramatize beyond what the source supports.
+State everything plainly and directly. Do not use metaphors, imagery, or dramatic phrasing. When several batches describe one ongoing development, combine them and describe it once. Only use information from the batch summaries; if they contradict each other, use the later one.
 
-Length requirement: ${length} (This is a guide based on the story's size — longer stories get more detail.)
-If fewer meaningful developments exist, write less. Never pad or invent to reach the target length.
+Length target: ${length} (longer stories get more detail). If there is less to cover, write less.
 
 ${firstMessagesText}BATCH SUMMARIES:
 ${batchSummaries}${quotesSection}${pinnedQuotesSection}${trailingText}
@@ -282,7 +305,7 @@ Your cohesive comprehensive summary here
 </summary>
 
 <quotes>
-CHARACTER: "Quote text" (Brief context)
+[Speaker name]: "Quote text" (Brief context)
 USER: "Another quote" (Brief context)
 </quotes>
 
@@ -455,7 +478,7 @@ export async function generateBatchSummary(startIndex, endIndex, batchIndex, ski
     // Get messages for this batch
     const messages = [];
     for (let i = startIndex; i <= endIndex; i++) {
-        if (chat[i] && !chat[i].is_disabled) {
+        if (chat[i] && !chat[i].is_disabled && !isUserHidden(chat[i])) {
             messages.push({ ...chat[i], index: i });
         }
     }
@@ -464,19 +487,15 @@ export async function generateBatchSummary(startIndex, endIndex, batchIndex, ski
     // Detect group mode and speakers
     const groupInfo = getGroupInfo();
     const isGroup = !!groupInfo;
-    let otherSpeakers;
-
-    if (isGroup) {
-        // Group mode: all non-user speakers are equal participants (pass null to skip filtering)
-        otherSpeakers = getOtherSpeakers(messages, null);
-    } else {
-        const charName = context.characters?.[context.characterId]?.name || 'Character';
-        otherSpeakers = getOtherSpeakers(messages, charName);
-    }
+    // charName is null in group mode (all speakers are equal participants); in
+    // 1-on-1 it's the card name, used both to filter out "other" speakers and
+    // as the attribution fallback for lines with no more specific speaker.
+    const charName = isGroup ? null : (context.characters?.[context.characterId]?.name || 'Character');
+    const otherSpeakers = getOtherSpeakers(messages, charName);
 
     let prompt;
     if (batchType === 'establishment') {
-        prompt = buildEstablishmentPrompt(messages, otherSpeakers, isGroup);
+        prompt = buildEstablishmentPrompt(messages, otherSpeakers, isGroup, charName);
     } else {
         const lookBackCount = getSetting('lookBackBatches');
         const batches = getBatches();
@@ -484,7 +503,7 @@ export async function generateBatchSummary(startIndex, endIndex, batchIndex, ski
             .filter(b => b.startIndex < startIndex && b.summary && !b.dirty)
             .slice(-lookBackCount)
             .map((b) => ({ index: batches.indexOf(b), summary: b.summary }));
-        prompt = buildBatchPrompt(messages, batchIndex, previousBatches, otherSpeakers, isGroup);
+        prompt = buildBatchPrompt(messages, batchIndex, previousBatches, otherSpeakers, isGroup, charName);
     }
 
     const response = await callLLM(prompt, skipProfileSwitch);
@@ -598,14 +617,14 @@ export async function generateComprehensive(skipProfileSwitch = false) {
 
     const firstMessages = chat
         .slice(0, Math.min(2, chat.length))
-        .filter(msg => !msg.is_disabled)
+        .filter(msg => !msg.is_disabled && !isUserHidden(msg))
         .map((msg, i) => ({ ...msg, index: i }));
 
     const lastBatchEndIndex = batches[batches.length - 1].endIndex;
     const trailingMessages = [];
     if (lastBatchEndIndex < chat.length - 1) {
         for (let i = lastBatchEndIndex + 1; i < chat.length; i++) {
-            if (!chat[i].is_disabled) {
+            if (!chat[i].is_disabled && !isUserHidden(chat[i])) {
                 trailingMessages.push({ ...chat[i], index: i });
             }
         }
@@ -613,18 +632,12 @@ export async function generateComprehensive(skipProfileSwitch = false) {
 
     const groupInfo = getGroupInfo();
     const isGroup = !!groupInfo;
-    let otherSpeakers;
-
-    if (isGroup) {
-        otherSpeakers = getOtherSpeakers(chat.filter(m => !m.is_disabled), null);
-    } else {
-        const charName = context.characters?.[context.characterId]?.name || 'Character';
-        otherSpeakers = getOtherSpeakers(chat.filter(m => !m.is_disabled), charName);
-    }
+    const charName = isGroup ? null : (context.characters?.[context.characterId]?.name || 'Character');
+    const otherSpeakers = getOtherSpeakers(chat.filter(m => !m.is_disabled), charName);
 
     const pinnedQuotes = getPinnedQuotes();
 
-    const prompt = buildComprehensivePrompt(batches, firstMessages, trailingMessages, otherSpeakers, pinnedQuotes, isGroup);
+    const prompt = buildComprehensivePrompt(batches, firstMessages, trailingMessages, otherSpeakers, pinnedQuotes, isGroup, charName);
     // Comprehensive summaries are the longest output (up to 24-32 sentences plus
     // 8 quotes for long stories). Give CMRS an explicit, generous token ceiling so
     // the response isn't silently truncated by the connection profile's default,
