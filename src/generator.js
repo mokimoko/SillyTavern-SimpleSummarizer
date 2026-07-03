@@ -16,6 +16,7 @@ import {
     getDynamicComprehensiveLength,
     getCurrentChatMetadata,
     getPinnedQuotes,
+    debugWarn,
 } from './storage.js';
 
 /**
@@ -348,22 +349,153 @@ function parseQuotes(quotesText) {
 }
 
 /**
- * Parse summary + quotes from an LLM response
+ * Typed parse failure. Mirrors MemoryBooks' makeAIError so callers can branch on
+ * a stable `code` instead of matching message text, and so a future "review the
+ * raw failed response" UI has the original text to work with.
+ *
+ *   code:        TRUNCATED | NO_TAGS | ONLY_REASONING | EMPTY | REFUSAL
+ *   recoverable: true when a clean retry (usually at a higher token limit) is
+ *                likely to succeed — currently only truncation.
+ *   raw:         the full raw model response, for later review.
+ *   partial:     best-effort salvaged summary text (truncation case), for review.
  */
-function parseResponse(response) {
-    const summaryMatch = response.match(/<summary>(.*?)<\/summary>/s);
-    let quotesMatch = response.match(/<quotes>(.*?)<\/quotes>/s);
-    if (!quotesMatch) {
-        quotesMatch = response.match(/<quotes>(.*)/s);
-        if (quotesMatch) console.warn('Summarizer: Quotes closing tag missing, parsing anyway');
+export class SummaryParseError extends Error {
+    constructor(code, message, { raw = '', partial = '' } = {}) {
+        super(message);
+        this.name = 'SummaryParseError';
+        this.code = code;
+        this.recoverable = code === 'TRUNCATED';
+        this.raw = raw;
+        this.partial = partial;
+    }
+}
+
+// Reasoning-model wrappers we strip before tag detection (R1, o1, QwQ, Gemini
+// thinking, etc.). Only well-formed pairs are removed; an unclosed opener is
+// treated as "only reasoning" downstream (usually itself a truncation).
+const THINK_PAIR_RE = /<think>[\s\S]*?<\/think>|<thinking>[\s\S]*?<\/thinking>/gi;
+const THINK_OPEN_RE = /<think\b|<thinking\b/i;
+
+/**
+ * Pure preprocessor: raw model text in → { summary, quotesText, warning } out,
+ * or throws SummaryParseError. Deliberately free of any ST-context dependency
+ * (no getContext), so it can be unit-tested against fixture strings. Quote
+ * *parsing* (which needs getContext for name resolution) stays in parseResponse.
+ *
+ * Parse cascade (first match wins):
+ *   1. <summary>…</summary> present            → success (+ optional warnings)
+ *   2. <summary> opened, never closed          → throw TRUNCATED (salvage partial)
+ *   3. nothing left after stripping reasoning  → throw ONLY_REASONING
+ *   4. unclosed <think> and no <summary>       → throw ONLY_REASONING
+ *   5. refusal phrasing, no tags               → throw REFUSAL
+ *   6. prose present but no <summary> tag      → throw NO_TAGS
+ *   7. empty input                             → throw EMPTY
+ */
+export function preprocessAndSplit(rawText) {
+    const raw = String(rawText ?? '');
+
+    // (7) Nothing at all.
+    if (raw.trim() === '') {
+        throw new SummaryParseError('EMPTY',
+            'The model returned an empty response. Regenerate this batch.',
+            { raw });
     }
 
-    if (!summaryMatch) throw new Error('Failed to parse summary from response');
+    // (Step 1) Strip well-formed reasoning blocks before any tag matching.
+    const text = raw.replace(THINK_PAIR_RE, '').trim();
 
-    const summary = summaryMatch[1].trim();
-    const quotes = quotesMatch ? parseQuotes(quotesMatch[1].trim()) : [];
+    // (3) Stripping reasoning consumed everything → the model only "thought".
+    if (text === '') {
+        throw new SummaryParseError('ONLY_REASONING',
+            'The model returned only reasoning and no summary. This usually means it ran out of tokens — increase Max Response Tokens and regenerate.',
+            { raw });
+    }
 
-    return { summary, quotes };
+    // (1) Happy path: a closed <summary> block.
+    const summaryClosed = text.match(/<summary>([\s\S]*?)<\/summary>/i);
+    if (summaryClosed) {
+        const summary = summaryClosed[1].trim();
+
+        // A closed-but-empty <summary></summary> is not usable content.
+        if (summary === '') {
+            throw new SummaryParseError('EMPTY',
+                'The model produced an empty <summary> block. Regenerate this batch.',
+                { raw });
+        }
+
+        // Quotes: prefer a closed block; fall back to open-to-EOF (quotes are
+        // last, so a missing close there is low-stakes) with a soft warning.
+        let quotesText = null;
+        let warning = null;
+        const quotesClosed = text.match(/<quotes>([\s\S]*?)<\/quotes>/i);
+        if (quotesClosed) {
+            quotesText = quotesClosed[1].trim();
+        } else {
+            const quotesOpen = text.match(/<quotes>([\s\S]*)/i);
+            if (quotesOpen) {
+                quotesText = quotesOpen[1].trim();
+                warning = 'quotes-unterminated';
+            }
+        }
+
+        // Weak secondary truncation hint: a long summary that doesn't end on
+        // terminal punctuation. Warning-only — prose can legitimately end
+        // without a period, so this must never block a successful parse.
+        if (!warning && summary.length >= 80 && !/[.!?"'”’)\]]\s*$/.test(summary)) {
+            warning = 'summary-unterminated-punctuation';
+        }
+
+        return { summary, quotesText, warning };
+    }
+
+    // (2) A summary was opened but never closed → truncation. Salvage the partial
+    // text (up to <quotes> or EOF) so a future review UI can show it.
+    const summaryOpen = text.match(/<summary>([\s\S]*)/i);
+    if (summaryOpen) {
+        const partial = summaryOpen[1].split(/<quotes>/i)[0].trim();
+        throw new SummaryParseError('TRUNCATED',
+            'Summary was cut off (likely hit the token limit). Increase Max Response Tokens and regenerate.',
+            { raw, partial });
+    }
+
+    // No <summary> tag at all from here down.
+
+    // (4) An unclosed <think> with no summary = reasoning that never produced a
+    // result (commonly a truncation inside the reasoning block itself).
+    if (THINK_OPEN_RE.test(text)) {
+        throw new SummaryParseError('ONLY_REASONING',
+            'The model returned only reasoning and no summary. This usually means it ran out of tokens — increase Max Response Tokens and regenerate.',
+            { raw });
+    }
+
+    // (5) A refusal rather than a summary: short text, refusal phrasing, no tags.
+    // Kept narrow — a real summary always has a <summary> tag and never reaches
+    // here, so this can't misclassify legitimate content that merely quotes "sorry".
+    if (text.length < 600 && /\b(I can['’]?t|I cannot|I['’]?m sorry|I am sorry|I['’]?m not able to|I am unable to|as an AI)\b/i.test(text)) {
+        throw new SummaryParseError('REFUSAL',
+            'The model declined to summarize instead of producing a summary. Check your connection profile or the content, then regenerate.',
+            { raw });
+    }
+
+    // (6) There is prose, but no <summary> tag. Do NOT salvage it as the summary —
+    // a stray question or comment would get stored as if it were real content.
+    throw new SummaryParseError('NO_TAGS',
+        'The model response did not contain a <summary> block. It may have ignored the format — regenerate this batch.',
+        { raw });
+}
+
+/**
+ * Parse summary + quotes from an LLM response.
+ *
+ * Thin wrapper over the pure preprocessAndSplit: split/validate (pure), then run
+ * the ST-context-dependent quote parsing on the extracted quotes chunk. Throws a
+ * typed SummaryParseError on any unparseable response.
+ */
+function parseResponse(response) {
+    const { summary, quotesText, warning } = preprocessAndSplit(response);
+    if (warning) debugWarn('Parse warning:', warning);
+    const quotes = quotesText ? parseQuotes(quotesText) : [];
+    return { summary, quotes, warning };
 }
 
 /**
@@ -407,14 +539,14 @@ async function callLLM(prompt, skipProfileSwitch = false, maxTokens = 4096) {
                                 || cmrsResult?.output
                                 || '';
                             if (response) return String(response).trim();
-                            console.warn('[Summarizer] CMRS returned empty (attempt', attempt + 1, ')');
+                            debugWarn('CMRS returned empty (attempt', attempt + 1, ')');
                         } catch (err) {
-                            console.warn(`[Summarizer] CMRS attempt ${attempt + 1} failed:`, err.message);
+                            debugWarn(`CMRS attempt ${attempt + 1} failed:`, err.message);
                             if (attempt === 0) await new Promise(r => setTimeout(r, 2000));
                         }
                     }
                     // Both CMRS attempts failed — fall through to quiet prompt
-                    console.warn('[Summarizer] CMRS exhausted, falling back to generateQuietPrompt');
+                    debugWarn('CMRS exhausted, falling back to generateQuietPrompt');
                 }
             }
         }
@@ -427,7 +559,7 @@ async function callLLM(prompt, skipProfileSwitch = false, maxTokens = 4096) {
             if (result.success) {
                 originalProfile = result.originalProfile;
             } else {
-                console.warn('[Summarizer] Profile switch failed:', result.error);
+                debugWarn('Profile switch failed:', result.error);
             }
         }
 
@@ -446,7 +578,7 @@ async function callLLM(prompt, skipProfileSwitch = false, maxTokens = 4096) {
             } catch (error) {
                 lastError = error;
                 if (attempt === 0) {
-                    console.warn(`[Summarizer] Quiet prompt attempt ${attempt + 1} failed, retrying in 2s...`, error.message);
+                    debugWarn(`Quiet prompt attempt ${attempt + 1} failed, retrying in 2s...`, error.message);
                     await new Promise(r => setTimeout(r, 2000));
                 }
             }
@@ -460,7 +592,7 @@ async function callLLM(prompt, skipProfileSwitch = false, maxTokens = 4096) {
         if (originalProfile && !skipProfileSwitch) {
             const restoreResult = await restoreProfileWithConfirmation(originalProfile);
             if (!restoreResult.success) {
-                console.warn('[Summarizer] Profile restoration failed:', restoreResult.error);
+                debugWarn('Profile restoration failed:', restoreResult.error);
             }
         }
     }
@@ -542,7 +674,15 @@ export async function processBatch(startIndex, endIndex, batchIndex, existingBat
     } catch (error) {
         console.error('Summarizer: Failed to process batch:', error);
         if (existingBatch) {
-            return updateBatch(existingBatch.id, { dirty: true, error: error.message });
+            return updateBatch(existingBatch.id, {
+                dirty: true,
+                error: error.message,
+                // Breadcrumbs for a future "review failed response" view. Typed
+                // parse failures (SummaryParseError) carry a stable code plus the
+                // raw text; other errors (network, etc.) just leave these null.
+                errorCode: error.code || null,
+                errorRaw: error.raw || null,
+            });
         }
         throw error;
     }
@@ -593,7 +733,7 @@ export async function processUnprocessedBatches(onProgress = null, skipProfileSw
 
             if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
                 const remaining = completeBatches - i - 1;
-                console.warn(`[Summarizer] ${MAX_CONSECUTIVE_FAILURES} consecutive failures — aborting remaining ${remaining} batch(es). Backend may be down.`);
+                debugWarn(`${MAX_CONSECUTIVE_FAILURES} consecutive failures — aborting remaining ${remaining} batch(es). Backend may be down.`);
                 toastr.error(`Summarizer stopped after ${MAX_CONSECUTIVE_FAILURES} consecutive failures. Check your connection profile / backend.`, 'Summarizer', { timeOut: 8000 });
                 break;
             }
