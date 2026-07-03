@@ -22,10 +22,23 @@ export const MODULE_NAME = 'summarizer';
 
 const logError = (...args) => console.error('[Summarizer]', ...args);
 
+/**
+ * Verbose logging helper. Only prints when the `debug` setting is enabled,
+ * so normal operation (retries, fallbacks, parse warnings) stays quiet.
+ * Reads the setting live so it responds to toggles without a reload.
+ */
+export const debugWarn = (...args) => {
+    if (extension_settings[MODULE_NAME]?.debug) console.warn('[Summarizer]', ...args);
+};
+
 // Default settings
 export const default_settings = {
     enabled: true,
     auto: false,
+
+    // Verbose console logging (retries, fallbacks, parse warnings).
+    // When false, only genuine errors reach the console.
+    debug: false,
 
     // Batch configuration
     batchSize: 6,
