@@ -318,6 +318,12 @@ export function addBatch(batch) {
         summary: batch.summary || '',
         quotes: batch.quotes || [],
         type: batch.type || 'regular',
+        // Importance 1-10 (LLM-scored during summarization). Batches created
+        // before this feature — or where the model omitted/garbled the tag —
+        // have no score; selection treats a missing value as neutral 5. Stored
+        // as null (not 5) so we can tell "unscored" from "genuinely scored 5",
+        // e.g. to surface a regen hint in the UI later.
+        importance: (typeof batch.importance === 'number') ? batch.importance : null,
         edited: batch.edited || false,
         dirty: batch.dirty || false,
         generatedAt: batch.generatedAt || Date.now(),
@@ -579,7 +585,72 @@ function getRotationOffset() {
     return chat_metadata[MODULE_NAME].rotationOffset || 0;
 }
 
-export function getBatchesToInject(chatLength) {
+// Neutral importance for batches with no LLM score (pre-feature or garbled tag).
+const NEUTRAL_IMPORTANCE = 5;
+
+// Stopwords for the relevance signal — mirrors the RP-flavored stoplist Aether
+// uses, plus pronouns/fillers that add noise to token overlap. Kept local so
+// storage.js stays dependency-free.
+const _REL_STOP = new Set([
+    'the', 'a', 'an', 'and', 'or', 'but', 'of', 'to', 'in', 'on', 'at', 'is', 'are',
+    'was', 'were', 'be', 'been', 'it', 'its', 'with', 'for', 'as', 'that', 'this',
+    'she', 'he', 'they', 'her', 'his', 'their', 'you', 'your', 'i', 'my', 'we', 'him',
+    'them', 'had', 'has', 'have', 'not', 'no', 'so', 'if', 'then', 'than', 'from',
+    'by', 'about', 'into', 'out', 'up', 'down', 'over', 'after', 'before', 'when',
+    'while', 'who', 'what', 'which', 'there', 'here', 'him', 'said', 'says',
+]);
+
+function _relTokens(text) {
+    const out = new Set();
+    for (const m of String(text || '').toLowerCase().matchAll(/[a-z0-9']+/g)) {
+        const t = m[0];
+        if (t.length > 1 && !_REL_STOP.has(t)) out.add(t);
+    }
+    return out;
+}
+
+/**
+ * IDF-weighted token overlap between a query and each candidate summary
+ * (Aether's "_bm25ish", trimmed). Rare shared words count more than common
+ * ones; returns a raw score per candidate (higher = more related to the query).
+ * Pure and deterministic — no scale normalization needed, callers only rank.
+ */
+function _relevanceScores(queryText, candidates) {
+    const q = _relTokens(queryText);
+    if (q.size === 0 || candidates.length === 0) return candidates.map(() => 0);
+    const docs = candidates.map(b => _relTokens(b.summary));
+    const df = new Map();
+    for (const d of docs) {
+        for (const t of q) if (d.has(t)) df.set(t, (df.get(t) || 0) + 1);
+    }
+    const n = docs.length;
+    return docs.map(d => {
+        let s = 0;
+        for (const t of q) if (d.has(t)) s += Math.log(1 + n / (1 + df.get(t)));
+        return s;
+    });
+}
+
+/**
+ * Select which batch summaries to inject.
+ *
+ * First N (opening) and last N (immediate context) batches are always kept, as
+ * before. The remaining "middle" pool — previously chosen by a blind rotating
+ * stride — is now RANKED so the batches most worth showing win the limited slots:
+ *   1. importance  (LLM-scored 1-10; unscored batches treated as neutral 5)
+ *   2. relevance   (IDF token overlap with the current scene = last few messages)
+ *   3. rotation    (the original offset stride, as a final tiebreaker so that
+ *                   equally-unremarkable batches still cycle over time)
+ *
+ * Net effect: a pivotal batch (a reveal, a death) stops rotating out of context,
+ * ties break toward whatever relates to what's happening right now, and when
+ * every signal is flat the behavior degrades gracefully to the old rotation.
+ *
+ * @param {number} chatLength
+ * @param {string} [queryText] recent-scene text for the relevance signal; when
+ *        omitted, relevance contributes 0 and selection is importance-then-rotation.
+ */
+export function getBatchesToInject(chatLength, queryText = '') {
     const batches = getBatches();
     const maxSummaries = getSetting('maxSummariesInContext');
     const alwaysFirst = getSetting('alwaysKeepFirstNBatches');
@@ -603,17 +674,38 @@ export function getBatchesToInject(chatLength) {
     const middleBatches = validBatches.slice(middleStart, middleEnd);
 
     if (middleBatches.length === 0) return [...firstN, ...lastN];
-
-    const offset = getRotationOffset();
-    const selected = [];
-    const step = Math.max(1, Math.floor(middleBatches.length / remaining));
-
-    for (let i = 0; i < remaining && i < middleBatches.length; i++) {
-        const index = ((i * step) + offset) % middleBatches.length;
-        selected.push(middleBatches[index]);
+    if (middleBatches.length <= remaining) {
+        // Everything in the middle fits — no need to rank, keep chronological.
+        return [...firstN, ...middleBatches, ...lastN];
     }
 
-    selected.sort((a, b) => a.startIndex - b.startIndex);
+    // Score the middle pool. Rotation is folded in as a tiny per-candidate
+    // tiebreaker: the original stride pattern decides order only when importance
+    // and relevance are identical, preserving the "cycle over time" behavior for
+    // flat/unremarkable stretches without ever overriding a real signal.
+    const offset = getRotationOffset();
+    const rel = _relevanceScores(queryText, middleBatches);
+    const scored = middleBatches.map((batch, i) => {
+        const imp = (typeof batch.importance === 'number') ? batch.importance : NEUTRAL_IMPORTANCE;
+        // Deterministic rotation phase in [0,1): batches whose position aligns
+        // with the current offset sort slightly earlier this pass, next pass a
+        // different set does. Scaled tiny so it never outweighs imp/rel.
+        const rotationTie = ((i + offset) % middleBatches.length) / middleBatches.length;
+        return { batch, imp, rel: rel[i], rotationTie, idx: i };
+    });
+
+    scored.sort((a, b) =>
+        (b.imp - a.imp) ||               // 1. importance, high first
+        (b.rel - a.rel) ||               // 2. relevance to current scene
+        (a.rotationTie - b.rotationTie)  // 3. rotation stride, cycles the flat ones
+    );
+
+    // Advance rotation so the next injection cycles the flat-signal batches,
+    // exactly as the old stride did.
+    incrementRotationOffset();
+
+    const selected = scored.slice(0, remaining).map(s => s.batch);
+    selected.sort((a, b) => a.startIndex - b.startIndex);  // re-chronologize for display
     return [...firstN, ...selected, ...lastN];
 }
 
