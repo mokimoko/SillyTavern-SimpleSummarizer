@@ -13,7 +13,6 @@ import {
     getPromptSettings,
     getBatches,
     getBatchesToInject,
-    incrementRotationOffset,
     getPinnedQuotes,
 } from './storage.js';
 import {
@@ -47,9 +46,39 @@ function getContentSignature() {
     const batches = getBatches();
     const batchSig = batches.map(b => {
         const pinnedCount = b.quotes?.filter(q => q.pinned)?.length || 0;
-        return `${b.id}:${b.dirty}:${b.summary?.length || 0}:p${pinnedCount}`;
+        // importance participates: regenerating a batch to backfill its score
+        // must invalidate the cache so selection re-ranks.
+        return `${b.id}:${b.dirty}:${b.summary?.length || 0}:p${pinnedCount}:i${b.importance ?? 'x'}`;
     }).join('|');
-    return `${chat?.length || 0}:${batchSig}:${getSetting('maxSummariesInContext')}:${getSetting('alwaysKeepFirstNBatches')}:${getSetting('alwaysKeepLastNBatches')}`;
+    // The relevance query is the recent scene; fold a cheap fingerprint of it in
+    // so selection refreshes as the scene moves, not only when batches change.
+    // Length alone collides across different same-length scenes, so use a fast
+    // rolling char hash (djb2-ish) — enough to detect the scene actually changed.
+    const q = getRecentSceneQuery();
+    let querySig = 0;
+    for (let i = 0; i < q.length; i++) querySig = ((querySig << 5) - querySig + q.charCodeAt(i)) | 0;
+    return `${chat?.length || 0}:${batchSig}:${getSetting('maxSummariesInContext')}:${getSetting('alwaysKeepFirstNBatches')}:${getSetting('alwaysKeepLastNBatches')}:q${querySig}`;
+}
+
+/**
+ * Build the relevance query from the current scene: the most recent few
+ * non-hidden messages, which is what the injected summaries should be
+ * relevant *to*. Kept small (last 4, capped length) so token overlap reflects
+ * the immediate moment rather than the whole tail. Mirrors generator.js's
+ * hidden-message handling loosely — is_system messages are skipped so ghosted
+ * lines and narrator scaffolding don't skew the query.
+ */
+function getRecentSceneQuery() {
+    const context = getContext();
+    const chat = context.chat;
+    if (!chat?.length) return '';
+    const parts = [];
+    for (let i = chat.length - 1; i >= 0 && parts.length < 4; i--) {
+        const m = chat[i];
+        if (!m || m.is_system || m.is_disabled) continue;
+        if (typeof m.mes === 'string' && m.mes.trim()) parts.push(m.mes);
+    }
+    return parts.join(' ').slice(0, 2000);
 }
 
 /**
@@ -68,26 +97,45 @@ function buildPromptContent() {
         return lastContentResult;
     }
 
-    const batchesToInject = getBatchesToInject(chat.length);
+    // Relevance query = the current scene. getBatchesToInject ranks the middle
+    // pool by importance, then relevance to this, then rotation — and advances
+    // the rotation offset itself, so we no longer increment it here.
+    const queryText = getRecentSceneQuery();
+    const batchesToInject = getBatchesToInject(chat.length, queryText);
     if (batchesToInject.length === 0) {
         lastContentSignature = sig;
         lastContentResult = '';
         return '';
     }
 
-    // Increment rotation for next time
-    incrementRotationOffset();
-
     const preamble = `These summaries describe events that occurred earlier in the story, presented in chronological order. They provide context for understanding the current situation but should not dictate the phrasing, tone, or style of future narration. Use them as factual reference, not as templates.`;
+
+    // Relative-time labels give the model a sense of chronology that a bare
+    // "Event Set 7" does not. The phrase is derived from the batch's position in
+    // the full chronological list (so internal numbering stays intact and
+    // load-bearing) versus how many batches exist — earliest reads "long ago",
+    // most recent reads "just now".
+    const allBatchesChrono = getBatches()
+        .filter(b => !b.dirty && b.summary)
+        .sort((a, b) => a.startIndex - b.startIndex);
+    const totalChrono = allBatchesChrono.length;
+    const whenPhrase = (batch) => {
+        const pos = allBatchesChrono.findIndex(b => b.id === batch.id); // 0 = earliest
+        if (pos < 0 || totalChrono <= 1) return 'Earlier';
+        const fromEnd = (totalChrono - 1) - pos; // 0 = most recent
+        if (fromEnd === 0) return 'Just now';
+        if (fromEnd <= 2) return 'Recently';
+        if (fromEnd <= 5) return 'Earlier';
+        if (fromEnd <= 10) return 'A while back';
+        return 'Long ago';
+    };
 
     const summaryLines = batchesToInject.map((batch) => {
         let label;
         if (batch.type === 'establishment') {
             label = 'Story Opening';
         } else {
-            const allBatches = getBatches();
-            const batchNumber = allBatches.indexOf(batch) + 1;
-            label = `Event Set ${batchNumber}`;
+            label = whenPhrase(batch);
         }
 
         let text = `${label}:\n${batch.summary}`;

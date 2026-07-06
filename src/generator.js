@@ -19,6 +19,34 @@ import {
     debugWarn,
 } from './storage.js';
 
+// Importance rubric shown to the model for the <importance> tag. Verbatim scale
+// anchors (Aether-style) so scoring is consistent batch to batch. Selection uses
+// this to keep pivotal batches from rotating out of context. Non-fatal: if the
+// model omits or garbles the tag, the batch still succeeds at neutral 5.
+const IMPORTANCE_INSTRUCTION = `Then rate how important this batch is to the overall story on a scale of 1-10, inside an <importance> tag (e.g. <importance>7</importance>). Use this scale:
+- 1-2: trivia or downtime — small talk, routine action, nothing that changes the story.
+- 3-4: color — atmosphere, minor character moments, small developments.
+- 5-6: notable developments — meaningful decisions, plans, shifts in a scene.
+- 7-8: milestones — reveals, betrayals, first times, fights, deaths, major turning points.
+- 9-10: story-defining events — moments the entire story pivots on.
+Output a single whole number from 1 to 10. Base it only on what actually happens in these messages.`;
+
+// Parse the <importance> tag leniently and NON-FATALLY. Returns an integer 1-10,
+// or null when nothing usable is present (caller then stores null = neutral).
+// Never throws: a missing/garbled score must not fail or dirty a batch.
+export function parseImportance(rawText) {
+    const text = String(rawText ?? '');
+    const tag = text.match(/<importance>([\s\S]*?)<\/importance>/i);
+    // Accept the tag body if present; otherwise scan a trailing "importance: N"
+    // style line as a soft fallback for models that drop the tag but keep a label.
+    const source = tag ? tag[1] : (text.match(/importance\s*[:=]\s*([0-9]{1,2})/i)?.[1] ?? '');
+    const num = String(source).match(/([0-9]{1,2})/);
+    if (!num) return null;
+    const n = parseInt(num[1], 10);
+    if (!Number.isFinite(n)) return null;
+    return Math.max(1, Math.min(10, n)); // clamp; 15 -> 10, 0 -> 1
+}
+
 /**
  * Detect a message the user manually hid via the eye icon / `/hide`.
  *
@@ -144,7 +172,11 @@ Your summary text here
 USER: "Another quote" (Brief context)
 </quotes>
 
+<importance>N</importance>
+
 ${quoteAttribution}
+
+${IMPORTANCE_INSTRUCTION}
 
 If there are no memorable quotes, use:
 <quotes>
@@ -204,7 +236,11 @@ Your summary of these NEW messages
 USER: "Another quote" (Brief context)
 </quotes>
 
+<importance>N</importance>
+
 ${quoteAttribution}
+
+${IMPORTANCE_INSTRUCTION}
 
 If there are no memorable quotes, use:
 <quotes>
@@ -423,15 +459,17 @@ export function preprocessAndSplit(rawText) {
                 { raw });
         }
 
-        // Quotes: prefer a closed block; fall back to open-to-EOF (quotes are
-        // last, so a missing close there is low-stakes) with a soft warning.
+        // Quotes: prefer a closed block; fall back to open-to-EOF with a soft
+        // warning. The open fallback stops at <importance> when present (that tag
+        // now follows quotes), so a missing </quotes> doesn't swallow the score
+        // line into quote text. Importance itself is parsed separately, off raw.
         let quotesText = null;
         let warning = null;
         const quotesClosed = text.match(/<quotes>([\s\S]*?)<\/quotes>/i);
         if (quotesClosed) {
             quotesText = quotesClosed[1].trim();
         } else {
-            const quotesOpen = text.match(/<quotes>([\s\S]*)/i);
+            const quotesOpen = text.match(/<quotes>([\s\S]*?)(?:<importance>|$)/i);
             if (quotesOpen) {
                 quotesText = quotesOpen[1].trim();
                 warning = 'quotes-unterminated';
@@ -640,8 +678,12 @@ export async function generateBatchSummary(startIndex, endIndex, batchIndex, ski
 
     const response = await callLLM(prompt, skipProfileSwitch);
     const parsed = parseResponse(response);
+    // Importance is parsed off the SAME raw response, separately and non-fatally:
+    // parseResponse throws on a missing <summary>, but a missing <importance> must
+    // never fail the batch — null here means "unscored", stored as neutral downstream.
+    const importance = parseImportance(response);
 
-    return { summary: parsed.summary, quotes: parsed.quotes, type: batchType };
+    return { summary: parsed.summary, quotes: parsed.quotes, type: batchType, importance };
 }
 
 /**
@@ -656,6 +698,9 @@ export async function processBatch(startIndex, endIndex, batchIndex, existingBat
                 summary: result.summary,
                 quotes: result.quotes || [],
                 type: result.type,
+                // null when unscored; regenerating an old batch backfills a real
+                // score here, which is the intended "regen over time" path.
+                importance: (typeof result.importance === 'number') ? result.importance : null,
                 dirty: false,
                 edited: false,
                 generatedAt: Date.now(),
@@ -666,6 +711,7 @@ export async function processBatch(startIndex, endIndex, batchIndex, existingBat
                 summary: result.summary,
                 quotes: result.quotes || [],
                 type: result.type,
+                importance: (typeof result.importance === 'number') ? result.importance : null,
                 dirty: false,
                 edited: false,
                 generatedAt: Date.now(),
