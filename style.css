@@ -228,7 +228,7 @@
     font-family: inherit;
     font-size: 0.84em;
     line-height: 1.6;
-    background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 60%, black);
+    background: color-mix(in srgb, var(--SmartThemeBodyColor) 5%, var(--SmartThemeBlurTintColor));
     border: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor) 30%, transparent);
     border-radius: 6px;
     color: var(--SmartThemeBodyColor);
@@ -306,7 +306,7 @@
 }
 
 .summarizer-quote-item {
-    background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 40%, black);
+    background: color-mix(in srgb, var(--SmartThemeBodyColor) 4%, var(--SmartThemeBlurTintColor));
     border: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor) 18%, transparent);
     border-radius: 6px;
     padding: 7px 10px;
@@ -319,7 +319,7 @@
 
 .summarizer-quote-item.summarizer-quote-pinned {
     border-color: color-mix(in srgb, var(--SmartThemeQuoteColor) 30%, transparent);
-    background: color-mix(in srgb, var(--SmartThemeQuoteColor) 4%, color-mix(in srgb, var(--SmartThemeBlurTintColor) 40%, black));
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor) 4%, color-mix(in srgb, var(--SmartThemeBodyColor) 4%, var(--SmartThemeBlurTintColor)));
 }
 
 .summarizer-quote-item:hover {
@@ -329,7 +329,7 @@
 .summarizer-quote-item input,
 .summarizer-quote-item textarea {
     width: 100%;
-    background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 50%, black);
+    background: color-mix(in srgb, var(--SmartThemeBodyColor) 7%, var(--SmartThemeBlurTintColor));
     border: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor) 18%, transparent);
     border-radius: 4px;
     color: var(--SmartThemeBodyColor);
