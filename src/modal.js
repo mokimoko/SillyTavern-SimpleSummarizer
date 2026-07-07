@@ -24,7 +24,7 @@ import {
     updateContextArchivesPromptContent,
 } from './promptInjection.js';
 import { updateBatchVisuals } from './ui.js';
-import { getStore } from './fileStore.js';
+import { getStore, getSummary, updateSummary, flushStore } from './fileStore.js';
 import {
     getConfig as getCAConfig, setConfig as setCAConfig,
     getPlacementConfig as getCAPlacement, setPlacementConfig as setCAPlacement,
@@ -627,7 +627,10 @@ function renderArchiveRow(filename, data, assignedSet, hasChat) {
                 </div>
                 <div class="ss-archive-row-preview">${escapeHtml(preview)}</div>
             </div>
-            ${hasChat && !isAssigned ? `<button class="ss-btn-icon ss-archive-assign" title="Assign to current chat"><i class="fa-solid fa-plus"></i></button>` : ''}
+            <div class="ss-archive-row-actions">
+                <button class="ss-btn-icon ss-archive-edit" title="Edit summary contents"><i class="fa-solid fa-pen"></i></button>
+                ${hasChat && !isAssigned ? `<button class="ss-btn-icon ss-archive-assign" title="Assign to current chat"><i class="fa-solid fa-plus"></i></button>` : ''}
+            </div>
         </div>
     `;
 }
@@ -679,8 +682,17 @@ function wireArchivesEvents(container) {
         }
     });
 
-    // ── All summaries list: assign (delegated — survives list refreshes) ──
+    // ── All summaries list: assign / edit (delegated — survives list refreshes) ──
     container.querySelector('#ss-archives-list')?.addEventListener('click', (e) => {
+        // Edit summary contents
+        const editBtn = e.target.closest('.ss-archive-edit');
+        if (editBtn) {
+            const row = editBtn.closest('.ss-archive-row');
+            const filename = row?.dataset?.filename;
+            if (filename) showEditArchiveDialog(filename);
+            return;
+        }
+
         const assignBtn = e.target.closest('.ss-archive-assign');
         if (!assignBtn) return;
         const row = assignBtn.closest('.ss-archive-row');
@@ -693,6 +705,91 @@ function wireArchivesEvents(container) {
             renderContent();
         }
     });
+}
+
+/**
+ * Edit an archived comprehensive summary's base data directly, without needing
+ * to open that chat. Reads from the file store by filename, writes back via
+ * updateSummary + flushStore. Also refreshes the injected context archives so
+ * assigned archives reflect edits immediately.
+ */
+async function showEditArchiveDialog(filename) {
+    const ctx = getContext();
+    const entry = await getSummary(filename);
+    if (!entry) {
+        toastr.error('Summary not found');
+        return;
+    }
+
+    const quotes = Array.isArray(entry.quotes) ? entry.quotes : [];
+    const label = filename.replace(/\.jsonl$/i, '').replace(/_/g, ' ');
+
+    // Build editor DOM
+    const wrap = document.createElement('div');
+    wrap.className = 'ss-archive-edit-dialog';
+    wrap.innerHTML = `
+        <div class="ss-archive-edit-title">${escapeHtml(label)}</div>
+        <label class="ss-field-label">Summary</label>
+        <textarea class="ss-textarea ss-archive-edit-text" rows="14"></textarea>
+        <label class="ss-field-label" style="margin-top:10px;">Quotes (${quotes.length})</label>
+        <div class="ss-archive-edit-quotes"></div>
+    `;
+    // Set values via .value to avoid HTML-escaping issues in the textarea
+    wrap.querySelector('.ss-archive-edit-text').value = entry.text || '';
+
+    const quotesWrap = wrap.querySelector('.ss-archive-edit-quotes');
+    if (quotes.length === 0) {
+        quotesWrap.innerHTML = '<div class="ss-empty-sm">No quotes</div>';
+    } else {
+        quotes.forEach((q, i) => {
+            const row = document.createElement('div');
+            row.className = 'ss-archive-edit-quote';
+            row.dataset.index = String(i);
+            row.innerHTML = `
+                <input type="text" class="ss-input ss-aeq-speaker" placeholder="Speaker">
+                <textarea class="ss-textarea ss-aeq-text" rows="2" placeholder="Quote text"></textarea>
+                <textarea class="ss-textarea ss-aeq-ctx" rows="1" placeholder="Context (optional)"></textarea>
+            `;
+            row.querySelector('.ss-aeq-speaker').value = q.speaker || '';
+            row.querySelector('.ss-aeq-text').value = q.text || '';
+            row.querySelector('.ss-aeq-ctx').value = q.context || '';
+            quotesWrap.appendChild(row);
+        });
+    }
+
+    const confirmed = await ctx.callGenericPopup(wrap, 'confirm', '', {
+        okButton: 'Save',
+        cancelButton: 'Cancel',
+        wide: true,
+        large: true,
+    });
+
+    if (!confirmed) return;
+
+    // Collect edited values
+    const newText = wrap.querySelector('.ss-archive-edit-text')?.value ?? '';
+    const newQuotes = [...wrap.querySelectorAll('.ss-archive-edit-quote')].map(row => {
+        const speaker = row.querySelector('.ss-aeq-speaker')?.value?.trim() || '';
+        const text = row.querySelector('.ss-aeq-text')?.value?.trim() || '';
+        const context = row.querySelector('.ss-aeq-ctx')?.value?.trim() || '';
+        const out = { speaker, text };
+        if (context) out.context = context;
+        return out;
+    }).filter(q => q.text || q.speaker);
+
+    const updates = { text: newText, edited: true };
+    if (quotes.length > 0 || newQuotes.length > 0) updates.quotes = newQuotes;
+
+    const result = await updateSummary(filename, updates);
+    if (!result) {
+        toastr.error('Failed to save — summary no longer exists');
+        return;
+    }
+
+    await flushStore(); // persist immediately rather than waiting on debounce
+    updateContextArchivesPromptContent(); // reflect edits in any assigned injection
+    toastr.success('Archive updated');
+    renderContent();
 }
 
 // ============================================================

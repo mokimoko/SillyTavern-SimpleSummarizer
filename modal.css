@@ -754,6 +754,66 @@
     white-space: nowrap;
 }
 
+/* Row action buttons (edit / assign) */
+.ss-archive-row-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+}
+.ss-archive-edit:hover { color: var(--bd-accent); }
+
+/* ─── Edit-archive dialog ─────────────────────────── */
+.ss-archive-edit-dialog {
+    text-align: left;
+    max-height: 70vh;
+    overflow-y: auto;
+    padding-right: 4px;
+    margin-bottom: 0;
+    padding-bottom: 0;
+}
+.ss-archive-edit-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--bd-text);
+    margin-bottom: 10px;
+    word-break: break-word;
+}
+.ss-archive-edit-quotes {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 4px;
+}
+.ss-archive-edit-quote {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px;
+    background: var(--bd-surface);
+    border: 1px solid var(--bd-border);
+    border-radius: 4px;
+}
+.ss-archive-edit-quote .ss-aeq-speaker {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 8px;
+    background: var(--bd-surface-2);
+    border: 1px solid var(--bd-border);
+    color: var(--bd-text);
+    font-size: 13px;
+    font-family: inherit;
+    text-align: left;
+}
+.ss-archive-edit-quote .ss-aeq-speaker:focus {
+    outline: none;
+    border-color: var(--bd-border-hover);
+}
+.ss-archive-edit-quote .ss-aeq-speaker::placeholder,
+.ss-archive-edit-quote textarea::placeholder {
+    color: var(--bd-text-faint);
+}
+
 /* ─── Scrollbars (explicit theme match) ───────────── */
 
 .ss-content,
