@@ -628,12 +628,31 @@
 }
 .ss-comp-quote-item {
     display: flex;
-    flex-direction: column;
-    gap: 3px;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
     padding: 5px 8px;
     background: var(--bd-surface-2);
     border: 1px solid var(--bd-border);
     font-size: 12px;
+}
+.ss-comp-quote-reorder {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    flex-shrink: 0;
+}
+.ss-comp-quote-reorder .ss-btn-icon {
+    padding: 1px 4px;
+    font-size: 10px;
+    line-height: 1;
+}
+.ss-comp-quote-content {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+    flex: 1;
 }
 .ss-comp-quote-main {
     display: flex;
