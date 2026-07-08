@@ -375,7 +375,7 @@ async function renderComprehensiveTab(container) {
                 <label class="ss-field-label">Quotes (${quoteCount})</label>
                 <div class="ss-comp-quotes" id="ss-comp-quotes">
                     ${quoteCount > 0
-                        ? comprehensive.quotes.map((q, i) => renderCompQuoteItem(q, i)).join('')
+                        ? comprehensive.quotes.map((q, i) => renderCompQuoteItem(q, i, quoteCount)).join('')
                         : '<div class="ss-empty-sm">No quotes selected</div>'}
                 </div>
             </div>
@@ -388,18 +388,41 @@ async function renderComprehensiveTab(container) {
     wireComprehensiveEvents(container, comprehensive);
 }
 
-function renderCompQuoteItem(quote, idx) {
+function renderCompQuoteItem(quote, idx, total) {
     return `
         <div class="ss-comp-quote-item" data-index="${idx}">
-            <div class="ss-comp-quote-main">
-                <span class="ss-comp-quote-speaker">${quote.speaker}</span>
-                <span class="ss-comp-quote-text">"${quote.text}"</span>
+            <div class="ss-comp-quote-reorder">
+                <button class="ss-btn-icon ss-comp-quote-move" data-dir="up" title="Move up" ${idx === 0 ? 'disabled' : ''}><i class="fa-solid fa-chevron-up"></i></button>
+                <button class="ss-btn-icon ss-comp-quote-move" data-dir="down" title="Move down" ${idx === total - 1 ? 'disabled' : ''}><i class="fa-solid fa-chevron-down"></i></button>
             </div>
-            ${quote.context ? `<div class="ss-comp-quote-ctx">${quote.context}</div>` : ''}
+            <div class="ss-comp-quote-content">
+                <div class="ss-comp-quote-main">
+                    <span class="ss-comp-quote-speaker">${quote.speaker}</span>
+                    <span class="ss-comp-quote-text">"${quote.text}"</span>
+                </div>
+                ${quote.context ? `<div class="ss-comp-quote-ctx">${quote.context}</div>` : ''}
+            </div>
         </div>`;
 }
 
 function wireComprehensiveEvents(container, comp) {
+    // Local working copy of the quote order. Reorder buttons mutate this and
+    // persist immediately; Save also writes it so a pending text edit and any
+    // reordering are stored together.
+    let workingQuotes = Array.isArray(comp.quotes) ? comp.quotes.slice() : [];
+
+    // Re-render only the quotes list (keeps the Summary textarea's unsaved edits
+    // intact while reordering).
+    function refreshQuotesList() {
+        const listEl = container.querySelector('#ss-comp-quotes');
+        if (!listEl) return;
+        listEl.innerHTML = workingQuotes.length > 0
+            ? workingQuotes.map((q, i) => renderCompQuoteItem(q, i, workingQuotes.length)).join('')
+            : '<div class="ss-empty-sm">No quotes selected</div>';
+        const label = container.querySelector('.ss-comp-section:nth-of-type(2) .ss-field-label');
+        if (label) label.textContent = `Quotes (${workingQuotes.length})`;
+    }
+
     container.querySelector('#ss-comp-regen')?.addEventListener('click', () => {
         getContext().executeSlashCommandsWithOptions('/summarizer-comprehensive');
     });
@@ -411,12 +434,33 @@ function wireComprehensiveEvents(container, comp) {
         renderContent();
     });
 
+    // Quote reordering (event delegation on the quotes container)
+    container.querySelector('#ss-comp-quotes')?.addEventListener('click', async (e) => {
+        const moveBtn = e.target.closest('.ss-comp-quote-move');
+        if (!moveBtn) return;
+
+        const item = moveBtn.closest('.ss-comp-quote-item');
+        const idx = parseInt(item?.dataset?.index, 10);
+        if (Number.isNaN(idx)) return;
+
+        const dir = moveBtn.dataset.dir;
+        const swapWith = dir === 'up' ? idx - 1 : idx + 1;
+        if (swapWith < 0 || swapWith >= workingQuotes.length) return;
+
+        // Swap in the working copy and re-render the list
+        [workingQuotes[idx], workingQuotes[swapWith]] = [workingQuotes[swapWith], workingQuotes[idx]];
+        refreshQuotesList();
+
+        // Persist the new order immediately
+        await updateComprehensiveSummary({ quotes: workingQuotes, edited: true });
+    });
+
     container.querySelector('#ss-comp-save')?.addEventListener('click', async () => {
         const newText = container.querySelector('#ss-comp-text')?.value?.trim();
-        if (newText) {
-            await updateComprehensiveSummary({ text: newText, edited: true });
-            toastr.success('Summary saved');
-        }
+        const updates = { quotes: workingQuotes, edited: true };
+        if (newText) updates.text = newText;
+        await updateComprehensiveSummary(updates);
+        toastr.success('Summary saved');
     });
 }
 
