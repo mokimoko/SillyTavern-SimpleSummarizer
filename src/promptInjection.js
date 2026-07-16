@@ -164,7 +164,7 @@ function buildPromptContent() {
         pinnedSection = `\n\nKey Moments (user-pinned):\n${pinnedLines}`;
     }
 
-    const content = `<priorEvents>\n${preamble}\n\n${summaryLines.join('\n\n')}${pinnedSection}\n</priorEvents>`;
+    const content = `<prior_events>\n${preamble}\n\n${summaryLines.join('\n\n')}${pinnedSection}\n</prior_events>`;
 
     lastContentSignature = sig;
     lastContentResult = content;
