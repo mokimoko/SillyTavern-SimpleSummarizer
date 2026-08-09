@@ -30,6 +30,7 @@ import {
     getPlacementConfig as getCAPlacement, setPlacementConfig as setCAPlacement,
     getAssignedArchives, assignArchive, removeArchive, moveArchive,
     getArchivePool, isContextArchivesEnabled, setContextArchivesEnabled,
+    isContextArchivesQuotesEnabled, setContextArchivesQuotesEnabled,
 } from './contextArchives.js';
 
 // ============================================================
@@ -564,6 +565,7 @@ async function renderArchivesTab(container) {
     const hasChat = !!(context?.chatId);
     const caAssigned = hasChat ? getAssignedArchives() : [];
     const assignedSet = new Set(caAssigned.map(a => a.chatFilename));
+    const caQuotes = hasChat ? isContextArchivesQuotesEnabled() : false;
 
     // Cache for filter refresh (avoids re-fetching store on every keystroke)
     cachedArchiveData = { allSummaries, entries, assignedSet, hasChat };
@@ -614,6 +616,10 @@ async function renderArchivesTab(container) {
                             <button class="ss-btn-icon ss-archive-remove" title="Remove"><i class="fa-solid fa-xmark"></i></button>
                         </div>
                     `;}).join('')}
+                </div>
+                <div class="ss-setting-item" style="margin-top: 8px;">
+                    <div class="ss-setting-info"><div class="ss-setting-title">Include Quotes</div></div>
+                    <label class="ss-toggle"><input type="checkbox" id="ss-ca-quotes" ${caQuotes ? 'checked' : ''}><span class="ss-toggle-slider"></span></label>
                 </div>
             </div>
             <div class="ss-divider"></div>
@@ -699,6 +705,12 @@ function wireArchivesEvents(container) {
             updateContextArchivesPromptContent();
             renderContent();
         }
+    });
+
+    // Context Archives: include quotes toggle (per-chat)
+    container.querySelector('#ss-ca-quotes')?.addEventListener('change', (e) => {
+        setContextArchivesQuotesEnabled(e.target.checked);
+        updateContextArchivesPromptContent();
     });
 
     // ── Filter: search input ──

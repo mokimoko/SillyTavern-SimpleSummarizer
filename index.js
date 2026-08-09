@@ -32,6 +32,7 @@ import {
     getPlacementConfig as getCAPlacement, setPlacementConfig as setCAPlacement,
     getAssignedArchives, assignArchive, removeArchive, moveArchive,
     getArchivePool, isContextArchivesEnabled, setContextArchivesEnabled,
+    isContextArchivesQuotesEnabled, setContextArchivesQuotesEnabled,
     buildContextArchivesContent,
 } from './src/contextArchives.js';
 
@@ -509,6 +510,8 @@ function exposePublicAPI() {
             getPool: getArchivePool,
             isEnabled: isContextArchivesEnabled,
             setEnabled: setContextArchivesEnabled,
+            isQuotesEnabled: isContextArchivesQuotesEnabled,
+            setQuotesEnabled: setContextArchivesQuotesEnabled,
             buildContent: buildContextArchivesContent,
             updatePrompt: updateContextArchivesPromptContent,
         },
