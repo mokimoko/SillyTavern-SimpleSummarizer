@@ -67,6 +67,7 @@ function ensureChatMetadata() {
         chat_metadata[MODULE_NAME].contextArchives = {
             assigned: [],
             enabled: true,
+            includeQuotes: false,
         };
     }
     return chat_metadata[MODULE_NAME].contextArchives;
@@ -86,6 +87,18 @@ export function setContextArchivesEnabled(enabled) {
     const ca = ensureChatMetadata();
     if (!ca) return;
     ca.enabled = enabled;
+    saveMetadataDebounced();
+}
+
+export function isContextArchivesQuotesEnabled() {
+    const ca = ensureChatMetadata();
+    return ca?.includeQuotes ?? false;
+}
+
+export function setContextArchivesQuotesEnabled(enabled) {
+    const ca = ensureChatMetadata();
+    if (!ca) return;
+    ca.includeQuotes = enabled;
     saveMetadataDebounced();
 }
 
@@ -478,6 +491,8 @@ export async function buildContextArchivesContent() {
     const config = getConfig();
     if (config.placement?.includeInPrompts === false) return '';
 
+    const includeQuotes = ca.includeQuotes ?? false;
+
     // Load summaries for each assigned archive
     const summaries = [];
     for (const assignment of ca.assigned) {
@@ -488,6 +503,7 @@ export async function buildContextArchivesContent() {
             chatFilename: assignment.chatFilename,
             label: assignment.label,
             text: entry.text,
+            quotes: Array.isArray(entry.quotes) ? entry.quotes : [],
         });
     }
 
@@ -519,7 +535,16 @@ export async function buildContextArchivesContent() {
     const sections = processed.map(item => {
         // Extract short label for injection header
         const shortLabel = extractShortLabel(item.label);
-        return `[Context: ${shortLabel}]\n${item.text}`;
+        let section = `[Context: ${shortLabel}]\n${item.text}`;
+        if (includeQuotes && item.quotes?.length > 0) {
+            const quoteLines = item.quotes.map(q => {
+                let line = `- ${q.speaker}: "${q.text}"`;
+                if (q.context?.trim()) line += ` (${q.context})`;
+                return line;
+            }).join('\n');
+            section += `\n\nMemorable Quotes:\n${quoteLines}`;
+        }
+        return section;
     });
 
     return `<prior_story_context>\n${preamble}\n\n${sections.join('\n\n')}\n</prior_story_context>`;
