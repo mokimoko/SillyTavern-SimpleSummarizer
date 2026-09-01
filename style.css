@@ -611,9 +611,9 @@
     border-radius: 2px;
 }
 
-#summarizer-quotes-container::-webkit-scrollbar-thumb:hover,
-#summarizer-comprehensive-quotes-container::-webkit-scrollbar-thumb:hover,
-.summarizer-modal-body::-webkit-scrollbar-thumb:hover {
+#summarizer-quotes-container:hover::-webkit-scrollbar-thumb,
+#summarizer-comprehensive-quotes-container:hover::-webkit-scrollbar-thumb,
+.summarizer-modal-body:hover::-webkit-scrollbar-thumb {
     background: color-mix(in srgb, var(--SmartThemeBodyColor) 15%, transparent);
 }
 

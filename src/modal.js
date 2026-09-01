@@ -24,7 +24,7 @@ import {
     updateContextArchivesPromptContent,
 } from './promptInjection.js';
 import { updateBatchVisuals } from './ui.js';
-import { getStore, getSummary, updateSummary, flushStore } from './fileStore.js';
+import { getStore, getSummary, updateSummary, deleteSummary, flushStore } from './fileStore.js';
 import {
     getConfig as getCAConfig, setConfig as setCAConfig,
     getPlacementConfig as getCAPlacement, setPlacementConfig as setCAPlacement,
@@ -680,6 +680,7 @@ function renderArchiveRow(filename, data, assignedSet, hasChat) {
             <div class="ss-archive-row-actions">
                 <button class="ss-btn-icon ss-archive-edit" title="Edit summary contents"><i class="fa-solid fa-pen"></i></button>
                 ${hasChat && !isAssigned ? `<button class="ss-btn-icon ss-archive-assign" title="Assign to current chat"><i class="fa-solid fa-plus"></i></button>` : ''}
+                <button class="ss-btn-icon ss-archive-delete" title="Delete stored summary"><i class="fa-solid fa-trash"></i></button>
             </div>
         </div>
     `;
@@ -738,8 +739,35 @@ function wireArchivesEvents(container) {
         }
     });
 
-    // ── All summaries list: assign / edit (delegated — survives list refreshes) ──
-    container.querySelector('#ss-archives-list')?.addEventListener('click', (e) => {
+    // ── All summaries list actions (delegated — survives list refreshes) ──
+    container.querySelector('#ss-archives-list')?.addEventListener('click', async (e) => {
+        const deleteBtn = e.target.closest('.ss-archive-delete');
+        if (deleteBtn) {
+            const row = deleteBtn.closest('.ss-archive-row');
+            const filename = row?.dataset?.filename;
+            if (!filename) return;
+
+            const label = row.querySelector('.ss-archive-row-title')?.textContent || filename;
+            const confirmed = await getContext().callGenericPopup(
+                `Delete the stored comprehensive summary for <strong>${escapeHtml(label)}</strong>?<br><br>This will remove the summary from Archives, but will not delete the original chat or its batch summaries.`,
+                'confirm', '', { okButton: 'Delete Summary', cancelButton: 'Cancel' },
+            );
+            if (!confirmed) return;
+
+            try {
+                await deleteSummary(filename);
+                await flushStore();
+                removeArchive(filename);
+                updateContextArchivesPromptContent();
+                toastr.success('Comprehensive summary deleted');
+                renderContent();
+            } catch (error) {
+                console.error('[Summarizer] Failed to delete archived summary:', error);
+                toastr.error('Failed to delete comprehensive summary');
+            }
+            return;
+        }
+
         // Edit summary contents
         const editBtn = e.target.closest('.ss-archive-edit');
         if (editBtn) {
