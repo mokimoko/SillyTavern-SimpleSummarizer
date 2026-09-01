@@ -773,7 +773,7 @@
     white-space: nowrap;
 }
 
-/* Row action buttons (edit / assign) */
+/* Row action buttons (edit / assign / delete) */
 .ss-archive-row-actions {
     display: flex;
     align-items: center;
@@ -781,6 +781,7 @@
     flex-shrink: 0;
 }
 .ss-archive-edit:hover { color: var(--bd-accent); }
+.ss-archive-delete:hover { color: rgba(220, 80, 80, 0.9); }
 
 /* ─── Edit-archive dialog ─────────────────────────── */
 .ss-archive-edit-dialog {
@@ -850,8 +851,8 @@
 .ss-comp-quotes::-webkit-scrollbar-track {
     background-color: transparent;
 }
-.ss-content::-webkit-scrollbar-track:hover,
-.ss-comp-quotes::-webkit-scrollbar-track:hover {
+.ss-content:hover::-webkit-scrollbar-track,
+.ss-comp-quotes:hover::-webkit-scrollbar-track {
     background-color: var(--SmartThemeChatTintColor);
     border-left: 1px solid var(--SmartThemeBorderColor);
 }
@@ -859,8 +860,8 @@
 .ss-comp-quotes::-webkit-scrollbar-thumb {
     background-color: var(--SmartThemeUnderlineColor);
 }
-.ss-content::-webkit-scrollbar-thumb:hover,
-.ss-comp-quotes::-webkit-scrollbar-thumb:hover {
+.ss-content:hover::-webkit-scrollbar-thumb,
+.ss-comp-quotes:hover::-webkit-scrollbar-thumb {
     background-color: var(--SmartThemeQuoteColor);
 }
 .ss-content::-webkit-scrollbar-button,
