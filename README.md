@@ -81,3 +81,7 @@ Reload SillyTavern if prompted.
 - Full archive recaps are not prompt-safe; use the normal comprehensive-summary macro in prompts.
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
