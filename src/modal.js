@@ -10,12 +10,13 @@
 import { getContext } from '../../../../extensions.js';
 import { tags, tag_map } from '../../../../tags.js';
 import {
-    getBatches, getBatch, updateBatch, deleteBatch, clearAllBatches,
+    getBatches, getBatch, updateBatch, deleteBatch,
+    getBatchSize, setBatchSize,
     getSetting, setSetting, getPromptSettings, setPromptSetting,
     toggleEnabled, isEnabled,
     getComprehensiveSummary, updateComprehensiveSummary, clearComprehensiveSummary,
+    getBackboneBatches, isComprehensiveSummaryCurrent,
     toggleQuotePin, getPinnedQuotes, getPinnedQuoteCount,
-    MODULE_NAME,
 } from './storage.js';
 import { regenerateBatch, regenerateComprehensive } from './generator.js';
 import {
@@ -24,6 +25,14 @@ import {
     updateContextArchivesPromptContent,
 } from './promptInjection.js';
 import { updateBatchVisuals } from './ui.js';
+import { makeModalDraggable } from './draggableModal.js';
+import {
+    CARD_DELIVERY_MODES,
+    getBatchMemoryPolicy,
+    KNOWLEDGE_MODES,
+    TAG_DELIVERY_MODES,
+} from './memoryPolicy.js';
+import { normalizeCharacterMemories } from './characterMemories.js';
 import { getStore, getSummary, updateSummary, deleteSummary, flushStore } from './fileStore.js';
 import {
     getConfig as getCAConfig, setConfig as setCAConfig,
@@ -39,6 +48,8 @@ import {
 
 let isOpen = false;
 let activeTab = 'batches';
+let draggableModal = null;
+let contentRenderVersion = 0;
 
 // Archive filter state (persists while modal is open)
 let archiveSearchText = '';
@@ -76,11 +87,14 @@ export function openSummarizerModal(tab = null) {
     requestAnimationFrame(() => {
         document.getElementById(OVERLAY_ID)?.classList.add('ss-visible');
         document.getElementById(MODAL_ID)?.classList.add('ss-visible');
+        requestAnimationFrame(() => draggableModal?.clamp());
     });
 }
 
 export function closeSummarizerModal() {
     if (!isOpen) return;
+
+    contentRenderVersion++;
 
     document.getElementById(OVERLAY_ID)?.classList.remove('ss-visible');
     document.getElementById(MODAL_ID)?.classList.remove('ss-visible');
@@ -91,6 +105,10 @@ export function closeSummarizerModal() {
     cachedArchiveData = null;
 
     isOpen = false;
+}
+
+export function refreshSummarizerModal() {
+    if (isOpen) renderContent();
 }
 
 // ============================================================
@@ -120,6 +138,12 @@ function ensureModalDOM() {
         </div>
     `;
     document.body.appendChild(modal);
+
+    draggableModal = makeModalDraggable(modal, modal.querySelector('.ss-header'), {
+        prefix: 'ss-modal',
+        visibleClass: 'ss-visible',
+        ignoreSelector: '.ss-close',
+    });
 
     modal.querySelector('#ss-close')?.addEventListener('click', closeSummarizerModal);
     document.addEventListener('keydown', (e) => {
@@ -154,15 +178,16 @@ function renderSidebar() {
 // ============================================================
 
 function renderContent() {
+    const version = ++contentRenderVersion;
     renderSidebar();
     const content = document.getElementById('ss-content');
     if (!content) return;
 
     switch (activeTab) {
         case 'batches':       renderBatchesTab(content); break;
-        case 'comprehensive': renderComprehensiveTab(content); break;
+        case 'comprehensive': renderComprehensiveTab(content, version); break;
         case 'pinned':        renderPinnedTab(content); break;
-        case 'archives':      renderArchivesTab(content); break;
+        case 'archives':      renderArchivesTab(content, version); break;
         case 'settings':      renderSettingsTab(content); break;
     }
 }
@@ -206,8 +231,21 @@ function renderBatchCard(batch, index) {
     const isEdited = batch.edited;
     const quoteCount = batch.quotes?.length || 0;
     const pinnedCount = batch.quotes?.filter(q => q.pinned)?.length || 0;
+    const characterMemoryCount = normalizeCharacterMemories(batch.characterMemories).length;
     const typeLabel = batch.type === 'establishment' ? 'Setup' : batch.type === 'history' ? 'History' : '';
     const summaryPreview = batch.summary?.length > 120 ? batch.summary.substring(0, 117) + '...' : (batch.summary || '');
+    const memoryPolicy = getBatchMemoryPolicy(batch);
+    const importance = Number.isFinite(batch.importance) ? Math.max(1, Math.min(10, Math.round(batch.importance))) : 5;
+    const keywordLabel = memoryPolicy.keywordActivated
+        ? `Triggered · ${memoryPolicy.keywords.length}`
+        : (memoryPolicy.keywordRequested ? 'Always active · protected' : '');
+    const knowledgeLabel = memoryPolicy.knowledge.mode === KNOWLEDGE_MODES.NARRATOR
+        ? 'Narrator only'
+        : (memoryPolicy.knowledge.mode === KNOWLEDGE_MODES.SELECTED ? 'Scoped knowledge' : '');
+    const restrictionLabel = memoryPolicy.restriction.cardMode !== CARD_DELIVERY_MODES.AUTO
+        || memoryPolicy.restriction.tagMode !== TAG_DELIVERY_MODES.ANY
+        ? 'Custom delivery'
+        : '';
 
     let statusClass = '';
     let statusLabel = '';
@@ -224,6 +262,11 @@ function renderBatchCard(batch, index) {
                     ${statusLabel ? `<span class="ss-batch-status">${statusLabel}</span>` : ''}
                 </div>
                 <div class="ss-batch-card-meta">
+                    <span class="ss-batch-memory-badge" title="Memory importance"><i class="fa-solid fa-star"></i> ${importance}</span>
+                    ${keywordLabel ? `<span class="ss-batch-memory-badge" title="Keyword recall status"><i class="fa-solid fa-key"></i> ${keywordLabel}</span>` : ''}
+                    ${knowledgeLabel ? `<span class="ss-batch-memory-badge" title="Character knowledge"><i class="fa-solid fa-brain"></i> ${knowledgeLabel}</span>` : ''}
+                    ${restrictionLabel ? `<span class="ss-batch-memory-badge" title="Delivery overrides"><i class="fa-solid fa-filter"></i> ${restrictionLabel}</span>` : ''}
+                    ${characterMemoryCount > 0 ? `<span class="ss-batch-memory-badge" title="Character memories"><i class="fa-solid fa-user-shield"></i> ${characterMemoryCount}</span>` : ''}
                     ${quoteCount > 0 ? `<span class="ss-batch-quotes">💬 ${quoteCount}${pinnedCount > 0 ? ` <i class="fa-solid fa-thumbtack"></i>${pinnedCount}` : ''}</span>` : ''}
                     <div class="ss-batch-card-actions">
                         <button class="ss-btn-icon ss-batch-jump" title="Jump to message"><i class="fa-solid fa-arrow-up-right-from-square"></i></button>
@@ -233,7 +276,7 @@ function renderBatchCard(batch, index) {
                 </div>
             </div>
             <div class="ss-batch-card-body">
-                <div class="ss-batch-preview">${summaryPreview}</div>
+                <div class="ss-batch-preview">${escapeHtml(summaryPreview)}</div>
             </div>
         </div>
     `;
@@ -319,7 +362,7 @@ function wireBatchesEvents(container) {
 // Tab: Comprehensive
 // ============================================================
 
-async function renderComprehensiveTab(container) {
+async function renderComprehensiveTab(container, version) {
     const context = getContext();
     if (!context?.chatId) {
         container.innerHTML = `<div class="ss-empty-state"><i class="fa-solid fa-comments"></i><p>Open a chat to view comprehensive summary</p></div>`;
@@ -327,9 +370,11 @@ async function renderComprehensiveTab(container) {
     }
 
     const comprehensive = await getComprehensiveSummary();
+    if (!isOpen || version !== contentRenderVersion || activeTab !== 'comprehensive') return;
 
     if (!comprehensive) {
         const batchCount = getBatches().filter(b => !b.dirty && b.summary).length;
+        const backboneCount = getBackboneBatches().length;
         container.innerHTML = `
             <div class="ss-tab-header">
                 <span class="ss-tab-title">Comprehensive Summary</span>
@@ -337,7 +382,9 @@ async function renderComprehensiveTab(container) {
             <div class="ss-empty-state">
                 <i class="fa-solid fa-scroll"></i>
                 <p>No comprehensive summary yet</p>
-                <p class="ss-empty-hint">${batchCount > 0 ? `${batchCount} batches available — generate a summary to combine them.` : 'Process batches first, then generate a comprehensive summary.'}</p>
+                <p class="ss-empty-hint">${batchCount > 0
+                    ? `${backboneCount} of ${batchCount} batches are always-active, unrestricted common memory and can be safely combined.`
+                    : 'Process batches first, then generate a story backbone.'}</p>
                 ${batchCount > 0 ? '<button class="ss-btn ss-btn-accent" id="ss-comp-generate"><i class="fa-solid fa-wand-magic-sparkles"></i> Generate</button>' : ''}
             </div>
         `;
@@ -350,6 +397,9 @@ async function renderComprehensiveTab(container) {
 
     const lastUpdated = new Date(comprehensive.lastGenerated).toLocaleString();
     const quoteCount = comprehensive.quotes?.length || 0;
+    const current = isComprehensiveSummaryCurrent(comprehensive);
+    const includedCount = comprehensive.basedOnBackboneBatches?.length || 0;
+    const excludedCount = comprehensive.metadata?.excludedScopedMemories || 0;
     let metaParts = [];
     if (comprehensive.metadata?.character) metaParts.push(comprehensive.metadata.character.displayName);
     if (comprehensive.metadata?.persona) metaParts.push(comprehensive.metadata.persona.displayName);
@@ -364,13 +414,25 @@ async function renderComprehensiveTab(container) {
         </div>
         <div class="ss-comp-meta">
             <span>${lastUpdated}</span>
-            ${metaParts.length > 0 ? `<span>${metaParts.join(' · ')}</span>` : ''}
+            <span>${includedCount} common memor${includedCount === 1 ? 'y' : 'ies'}</span>
+            ${excludedCount > 0 ? `<span>${excludedCount} scoped separately</span>` : ''}
+            ${metaParts.length > 0 ? `<span>${metaParts.map(escapeHtml).join(' · ')}</span>` : ''}
             ${comprehensive.edited ? '<span class="ss-comp-edited">Edited</span>' : ''}
+        </div>
+        <div class="ss-comp-policy-note ${current ? '' : 'ss-comp-policy-stale'}">
+            <i class="fa-solid ${current ? 'fa-shield-halved' : 'fa-triangle-exclamation'}"></i>
+            ${current
+                ? 'The archive recap contains everything. The prompt-safe backbone contains only always-active, unrestricted common memories; all other memories remain separate.'
+                : 'The source memories changed. Regenerate before using the comprehensive-summary macros.'}
         </div>
         <div class="ss-comp-body">
             <div class="ss-comp-section">
-                <label class="ss-field-label">Summary</label>
-                <textarea class="ss-textarea" id="ss-comp-text" rows="10">${comprehensive.text || ''}</textarea>
+                <label class="ss-field-label">Complete archive recap</label>
+                <textarea class="ss-textarea" id="ss-comp-text" rows="10"></textarea>
+            </div>
+            <div class="ss-comp-section">
+                <label class="ss-field-label">Prompt-safe story backbone</label>
+                <textarea class="ss-textarea" id="ss-comp-context-text" rows="7" placeholder="No unrestricted common memories — scoped memories will remain individual."></textarea>
             </div>
             <div class="ss-comp-section">
                 <label class="ss-field-label">Quotes (${quoteCount})</label>
@@ -386,6 +448,8 @@ async function renderComprehensiveTab(container) {
         </div>
     `;
 
+    container.querySelector('#ss-comp-text').value = comprehensive.text || '';
+    container.querySelector('#ss-comp-context-text').value = comprehensive.contextText || '';
     wireComprehensiveEvents(container, comprehensive);
 }
 
@@ -398,10 +462,10 @@ function renderCompQuoteItem(quote, idx, total) {
             </div>
             <div class="ss-comp-quote-content">
                 <div class="ss-comp-quote-main">
-                    <span class="ss-comp-quote-speaker">${quote.speaker}</span>
-                    <span class="ss-comp-quote-text">"${quote.text}"</span>
+                    <span class="ss-comp-quote-speaker">${escapeHtml(quote.speaker)}</span>
+                    <span class="ss-comp-quote-text">"${escapeHtml(quote.text)}"</span>
                 </div>
-                ${quote.context ? `<div class="ss-comp-quote-ctx">${quote.context}</div>` : ''}
+                ${quote.context ? `<div class="ss-comp-quote-ctx">${escapeHtml(quote.context)}</div>` : ''}
             </div>
         </div>`;
 }
@@ -420,7 +484,7 @@ function wireComprehensiveEvents(container, comp) {
         listEl.innerHTML = workingQuotes.length > 0
             ? workingQuotes.map((q, i) => renderCompQuoteItem(q, i, workingQuotes.length)).join('')
             : '<div class="ss-empty-sm">No quotes selected</div>';
-        const label = container.querySelector('.ss-comp-section:nth-of-type(2) .ss-field-label');
+        const label = container.querySelector('.ss-comp-section:nth-of-type(3) .ss-field-label');
         if (label) label.textContent = `Quotes (${workingQuotes.length})`;
     }
 
@@ -458,8 +522,10 @@ function wireComprehensiveEvents(container, comp) {
 
     container.querySelector('#ss-comp-save')?.addEventListener('click', async () => {
         const newText = container.querySelector('#ss-comp-text')?.value?.trim();
+        const newContextText = container.querySelector('#ss-comp-context-text')?.value?.trim() || '';
         const updates = { quotes: workingQuotes, edited: true };
         if (newText) updates.text = newText;
+        updates.contextText = newContextText;
         await updateComprehensiveSummary(updates);
         toastr.success('Summary saved');
     });
@@ -556,8 +622,17 @@ function refreshArchiveList(container) {
 // Tab: Archives
 // ============================================================
 
-async function renderArchivesTab(container) {
-    const store = await getStore();
+async function renderArchivesTab(container, version) {
+    let store;
+    try {
+        store = await getStore();
+    } catch {
+        if (isOpen && version === contentRenderVersion && activeTab === 'archives') {
+            container.innerHTML = `<div class="ss-empty-state"><i class="fa-solid fa-triangle-exclamation"></i><p>Could not load the summary archive</p></div>`;
+        }
+        return;
+    }
+    if (!isOpen || version !== contentRenderVersion || activeTab !== 'archives') return;
     const allSummaries = store?.summaries || {};
     const entries = Object.entries(allSummaries);
 
@@ -914,10 +989,10 @@ function renderPinnedTab(container) {
                 const batch = batches[pq.batchIndex];
                 const rangeLabel = batch ? `msgs ${batch.startIndex + 1}–${batch.endIndex + 1}` : '';
                 return `
-                <div class="ss-pinned-item" data-batch-id="${pq.batchId}" data-quote-index="${pq.quoteIndex}">
+                <div class="ss-pinned-item" data-batch-id="${pq.batchId}" data-quote-index="${pq.quoteIndex}" data-character-memory-id="${pq.characterMemoryId || ''}">
                     <div class="ss-pinned-item-header">
                         <span class="ss-pinned-speaker">${escapeHtml(pq.speaker)}</span>
-                        <span class="ss-pinned-batch" title="${rangeLabel}">Batch ${pq.batchIndex + 1}</span>
+                        <span class="ss-pinned-batch" title="${rangeLabel}">Batch ${pq.batchIndex + 1}${pq.characterMemoryId ? ' · character memory' : ''}</span>
                     </div>
                     <div class="ss-pinned-text">"${escapeHtml(pq.text)}"</div>
                     ${pq.context ? `<div class="ss-pinned-context">${escapeHtml(pq.context)}</div>` : ''}
@@ -938,10 +1013,11 @@ function wirePinnedEvents(container) {
         if (!item) return;
         const batchId = item.dataset.batchId;
         const quoteIndex = parseInt(item.dataset.quoteIndex, 10);
+        const characterMemoryId = item.dataset.characterMemoryId || null;
 
         // Unpin
         if (e.target.closest('.ss-pinned-unpin')) {
-            toggleQuotePin(batchId, quoteIndex);
+            toggleQuotePin(batchId, quoteIndex, characterMemoryId);
             invalidateSummarizerPromptCache();
             updateSummarizerPromptContent();
             updateBatchVisuals();
@@ -965,8 +1041,12 @@ function renderSettingsTab(container) {
     const enabled = isEnabled();
     const auto = getSetting('auto');
     const autoBuffer = getSetting('autoBuffer');
-    const batchSize = getSetting('batchSize');
+    const batchSize = getBatchSize();
     const lookBack = getSetting('lookBackBatches');
+    const autoTagKeywords = getSetting('autoTagKeywords');
+    const autoCharacterMemories = getSetting('autoCharacterMemories');
+    const keywordActivatedByDefault = getSetting('keywordActivatedByDefault');
+    const enableCharacterRestrictions = getSetting('enableCharacterRestrictions');
     const maxSummaries = getSetting('maxSummariesInContext');
     const alwaysFirst = getSetting('alwaysKeepFirstNBatches');
     const alwaysLast = getSetting('alwaysKeepLastNBatches');
@@ -1051,6 +1131,46 @@ function renderSettingsTab(container) {
 
             <div class="ss-divider-section"></div>
 
+            <!-- ===== SMART MEMORY ===== -->
+            <div class="ss-section-label"><i class="fa-solid fa-brain"></i> Smart Memory</div>
+
+            <div class="ss-setting-item">
+                <div class="ss-setting-info">
+                    <div class="ss-setting-title">Auto-Generate Character Memories</div>
+                    <div class="ss-setting-desc">Extracts private knowledge and limited perspectives in the same batch-summary response.</div>
+                </div>
+                <label class="ss-toggle"><input type="checkbox" id="ss-auto-character-memories" ${autoCharacterMemories !== false ? 'checked' : ''}><span class="ss-toggle-slider"></span></label>
+            </div>
+            <div class="ss-divider"></div>
+
+            <div class="ss-setting-item">
+                <div class="ss-setting-info">
+                    <div class="ss-setting-title">Auto-Generate Keywords</div>
+                    <div class="ss-setting-desc">Requests recall keywords in the same summary-generation response.</div>
+                </div>
+                <label class="ss-toggle"><input type="checkbox" id="ss-auto-keywords" ${autoTagKeywords ? 'checked' : ''}><span class="ss-toggle-slider"></span></label>
+            </div>
+            <div class="ss-divider"></div>
+
+            <div class="ss-setting-item">
+                <div class="ss-setting-info">
+                    <div class="ss-setting-title">Keyword-Activate New Batches</div>
+                    <div class="ss-setting-desc">Only new, nonessential batches (importance 1–4). Setup, history, and important memories stay normally recalled.</div>
+                </div>
+                <label class="ss-toggle"><input type="checkbox" id="ss-keywords-default" ${keywordActivatedByDefault ? 'checked' : ''}><span class="ss-toggle-slider"></span></label>
+            </div>
+            <div class="ss-divider"></div>
+
+            <div class="ss-setting-item">
+                <div class="ss-setting-info">
+                    <div class="ss-setting-title">Enforce Delivery Boundaries</div>
+                    <div class="ss-setting-desc">When off, hard card/tag delivery is ignored; character-knowledge instructions remain.</div>
+                </div>
+                <label class="ss-toggle"><input type="checkbox" id="ss-character-restrictions" ${enableCharacterRestrictions !== false ? 'checked' : ''}><span class="ss-toggle-slider"></span></label>
+            </div>
+
+            <div class="ss-divider-section"></div>
+
             <!-- ===== MESSAGE TRIMMING ===== -->
             <div class="ss-section-label"><i class="fa-solid fa-scissors"></i> Message Trimming</div>
 
@@ -1125,23 +1245,21 @@ function renderSettingsTab(container) {
     populateConnectionProfiles();
 }
 
-function renderNumberSetting(title, desc, id, value, min, max) {
-    return `
-        <div class="ss-setting-item">
-            <div class="ss-setting-info">
-                <div class="ss-setting-title">${title}</div>
-                ${desc ? `<div class="ss-setting-desc">${desc}</div>` : ''}
-            </div>
-            <input type="number" class="ss-input-num" id="${id}" min="${min}" max="${max}" value="${value}">
-        </div>`;
-}
-
 function wireSettingsEvents(container) {
     const $ = (sel) => container.querySelector(sel);
 
     // Toggles
     $('#ss-enabled')?.addEventListener('change', (e) => toggleEnabled(e.target.checked));
     $('#ss-auto')?.addEventListener('change', (e) => setSetting('auto', e.target.checked));
+    $('#ss-auto-character-memories')?.addEventListener('change', (e) => setSetting('autoCharacterMemories', e.target.checked));
+    $('#ss-auto-keywords')?.addEventListener('change', (e) => setSetting('autoTagKeywords', e.target.checked));
+    $('#ss-keywords-default')?.addEventListener('change', (e) => setSetting('keywordActivatedByDefault', e.target.checked));
+    $('#ss-character-restrictions')?.addEventListener('change', (e) => {
+        setSetting('enableCharacterRestrictions', e.target.checked);
+        invalidateSummarizerPromptCache();
+        updateSummarizerPromptContent();
+        updateBatchVisuals();
+    });
 
     // Numbers
     const numHandler = (id, key, min, max) => {
@@ -1151,11 +1269,41 @@ function wireSettingsEvents(container) {
         });
     };
     numHandler('#ss-buffer', 'autoBuffer', 0, 10);
-    numHandler('#ss-batch-size', 'batchSize', 1, 20);
     numHandler('#ss-lookback', 'lookBackBatches', 0, 5);
     numHandler('#ss-max-sum', 'maxSummariesInContext', 3, 50);
     numHandler('#ss-first-n', 'alwaysKeepFirstNBatches', 1, 10);
     numHandler('#ss-last-n', 'alwaysKeepLastNBatches', 1, 10);
+
+    $('#ss-batch-size')?.addEventListener('change', async (e) => {
+        const previous = getBatchSize();
+        const next = Math.max(1, Math.min(20, parseInt(e.target.value) || 1));
+        if (next === previous) {
+            e.target.value = previous;
+            return;
+        }
+
+        const hasBatches = getBatches().length > 0;
+        if (hasBatches) {
+            const confirmed = await getContext().callGenericPopup(
+                'Changing batch size will clear this chat\'s existing batch and comprehensive summaries so their message ranges do not overlap.',
+                'confirm', '', { okButton: 'Change & Rebuild', cancelButton: 'Cancel' },
+            );
+            if (!confirmed) {
+                e.target.value = previous;
+                return;
+            }
+        }
+
+        setBatchSize(next, { clearExisting: hasBatches });
+        if (hasBatches) await clearComprehensiveSummary();
+        invalidateSummarizerPromptCache();
+        updateSummarizerPromptContent();
+        updateBatchVisuals();
+        toastr.info(hasBatches
+            ? 'Batch size changed. Process the chat again to rebuild summaries.'
+            : 'Batch size changed.');
+        renderContent();
+    });
 
     // Exclusion mode
     container.querySelectorAll('input[name="ss-excl-mode"]').forEach(r => {

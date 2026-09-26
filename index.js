@@ -1,12 +1,12 @@
 /**
  * SillyTavern-Summarizer — Standalone Extension
- * 
+ *
  * Batch-based chat summarization with comprehensive summaries,
  * memorable quotes, prompt injection, macros, and auto-processing.
- * 
+ *
  * Works fully standalone.
  */
-import { eventSource, event_types, saveSettingsDebounced, streamingProcessor } from '../../../../script.js';
+import { eventSource, event_types, streamingProcessor } from '../../../../script.js';
 import { getContext } from '../../../extensions.js';
 import { SlashCommand } from '../../../slash-commands/SlashCommand.js';
 import { SlashCommandParser } from '../../../slash-commands/SlashCommandParser.js';
@@ -14,19 +14,21 @@ import { SlashCommandParser } from '../../../slash-commands/SlashCommandParser.j
 import { initFileStore, getSummary as getFileSummary } from './src/fileStore.js';
 import {
     initSettings, getSetting, isEnabled, toggleEnabled, getBatches, getUnprocessedBatches,
-    clearAllBatches, fullReset, getComprehensiveSummary, markBatchRangeDirty,
-    getBatchesToInject, shouldExcludeMessage, MODULE_NAME,
+    fullReset, getComprehensiveSummary, markBatchRangeDirty, markBatchesDirtyFrom,
+    getBatchSize, getMessageExclusionCount,
     toggleQuotePin, getPinnedQuotes, getPinnedQuoteCount,
+    getBackboneBatches, isComprehensiveSummaryCurrent, isComprehensiveContextCurrent,
 } from './src/storage.js';
 import { processUnprocessedBatches, generateComprehensive } from './src/generator.js';
 import { switchToProfileWithConfirmation, restoreProfileWithConfirmation } from './src/utils.js';
 import {
     applySummarizerPrompt, cleanupSummarizerPrompt, updateSummarizerPromptContent,
     invalidateSummarizerPromptCache, refreshSummarizerPrompt,
-    applyContextArchivesPrompt, updateContextArchivesPromptContent, invalidateContextArchivesCache,
+    applyContextArchivesPrompt, updateContextArchivesPromptContent,
+    buildPromptContent,
 } from './src/promptInjection.js';
-import { updateBatchVisuals, showProgressDialog, showIndeterminateProgress } from './src/ui.js';
-import { openSummarizerModal, closeSummarizerModal } from './src/modal.js';
+import { updateBatchVisuals, scheduleBatchVisualUpdate, showProgressDialog, showIndeterminateProgress } from './src/ui.js';
+import { openSummarizerModal, closeSummarizerModal, refreshSummarizerModal } from './src/modal.js';
 import {
     getConfig as getCAConfig, setConfig as setCAConfig,
     getPlacementConfig as getCAPlacement, setPlacementConfig as setCAPlacement,
@@ -38,54 +40,33 @@ import {
 
 let initialized = false;
 let cachedComprehensiveSummary = null;
-let cachedBatchSummaries = '';
 let isSummarizerRunning = false;
+let autoProcessTimer = null;
 
 // ============================================================
 // Macro cache
 // ============================================================
 
 async function updateMacroCache() {
-    if (!isEnabled()) { cachedComprehensiveSummary = null; cachedBatchSummaries = ''; return; }
+    if (!isEnabled()) { cachedComprehensiveSummary = null; return; }
     try { cachedComprehensiveSummary = await getComprehensiveSummary(); } catch { cachedComprehensiveSummary = null; }
-
-    const context = getContext();
-    const batchesToInject = getBatchesToInject(context.chat.length);
-    if (batchesToInject.length === 0) { cachedBatchSummaries = ''; return; }
-
-    cachedBatchSummaries = batchesToInject.map(batch => {
-        const allBatches = getBatches();
-        const label = batch.type === 'establishment' ? 'Story Opening' : `Event Set ${allBatches.indexOf(batch) + 1}`;
-        let text = `${label}:\n${batch.summary}`;
-        if (batch.quotes?.length > 0) {
-            text += '\n' + batch.quotes.map(q => {
-                let line = `  ${q.speaker}: "${q.text}"`;
-                if (q.context?.trim()) line += ` (${q.context})`;
-                return line;
-            }).join('\n');
-        }
-        return text;
-    }).join('\n\n');
 }
 
 // ============================================================
 // Generate interceptor
 // ============================================================
 
-globalThis.summarizer_intercept_messages = function (chat, _contextSize, _abort, type) {
+globalThis.summarizer_intercept_messages = function (chat, _contextSize, _abort, _type) {
     if (!isEnabled()) return;
     const context = getContext();
     const IGNORE_SYMBOL = context.symbols.ignore;
     if (!IGNORE_SYMBOL) return;
     const chatLength = chat.length;
-    let excludedCount = 0;
-    for (let i = 0; i < chatLength; i++) {
-        if (shouldExcludeMessage(i, chatLength)) {
-            chat[i] = structuredClone(chat[i]);
-            if (!chat[i].extra) chat[i].extra = {};
-            chat[i].extra[IGNORE_SYMBOL] = true;
-            excludedCount++;
-        }
+    const excludeCount = getMessageExclusionCount(chatLength);
+    for (let i = 0; i < excludeCount; i++) {
+        chat[i] = structuredClone(chat[i]);
+        if (!chat[i].extra) chat[i].extra = {};
+        chat[i].extra[IGNORE_SYMBOL] = true;
     }
 
 };
@@ -109,7 +90,7 @@ async function autoProcessNewBatches() {
     if (!isEnabled() || !getSetting('auto')) return;
 
     const context = getContext();
-    const batchSize = getSetting('batchSize');
+    const batchSize = getBatchSize();
     const autoBuffer = getSetting('autoBuffer') || 0;
     const effectiveLength = Math.max(0, context.chat.length - autoBuffer);
     const completeBatches = Math.floor(effectiveLength / batchSize);
@@ -173,12 +154,14 @@ async function processNewBatches(silent = false) {
 }
 
 async function generateComprehensiveSummary() {
-    const batches = getBatches().filter(b => !b.dirty && b.summary);
-    if (batches.length === 0) { toastr.error('No batch summaries available. Process batches first.'); return; }
+    const allBatches = getBatches().filter(b => !b.dirty && b.summary);
+    const batches = getBackboneBatches();
+    if (allBatches.length === 0) { toastr.error('No batch summaries available. Process batches first.'); return; }
+    const excluded = allBatches.length - batches.length;
 
     const context = getContext();
     const confirmed = await context.callGenericPopup(
-        `Generate comprehensive summary from ${batches.length} batch summaries?`,
+        `Generate a complete archival recap from ${allBatches.length} memor${allBatches.length === 1 ? 'y' : 'ies'}?${excluded > 0 ? `\n\nA prompt-safe story backbone will use the ${batches.length} unrestricted common memor${batches.length === 1 ? 'y' : 'ies'}. The other ${excluded} will remain separate so their activation and character rules are preserved.` : '\n\nAll memories are eligible for the prompt-safe story backbone.'}`,
         'confirm', '', { okButton: 'Generate', cancelButton: 'Cancel' },
     );
     if (!confirmed) return;
@@ -218,6 +201,8 @@ async function generateComprehensiveSummary() {
 // ============================================================
 
 function registerEventHandlers() {
+    globalThis.addEventListener?.('summarizer:comprehensive-changed', updateMacroCache);
+
     eventSource.on(event_types.MESSAGE_RECEIVED, async (messageId, type) => {
         if (type !== 'normal' || !isEnabled() || !getSetting('auto')) return;
 
@@ -236,7 +221,7 @@ function registerEventHandlers() {
         }
 
         // Quick check: are there even batches to process?
-        const batchSize = getSetting('batchSize');
+        const batchSize = getBatchSize();
         const autoBuffer = getSetting('autoBuffer') || 0;
         const effectiveLength = Math.max(0, context.chat.length - autoBuffer);
         const completeBatches = Math.floor(effectiveLength / batchSize);
@@ -245,8 +230,12 @@ function registerEventHandlers() {
 
         // Defer to next tick to let ST fully settle its internal state.
         // This is intentionally NOT a long poll — just a brief yield.
-        setTimeout(async () => {
+        const scheduledChatId = context.chatId;
+        if (autoProcessTimer) clearTimeout(autoProcessTimer);
+        autoProcessTimer = setTimeout(async () => {
+            autoProcessTimer = null;
             // Re-check guards after the yield
+            if (getContext().chatId !== scheduledChatId) return;
             if (isSummarizerRunning) return;
             if (streamingProcessor && !streamingProcessor.isFinished) return;
 
@@ -262,31 +251,53 @@ function registerEventHandlers() {
     });
 
     eventSource.on(event_types.CHAT_CHANGED, () => {
+        if (autoProcessTimer) clearTimeout(autoProcessTimer);
+        autoProcessTimer = null;
         invalidateSummarizerPromptCache();
-        invalidateContextArchivesCache();
-        updateBatchVisuals();
+        scheduleBatchVisualUpdate();
+        refreshSummarizerModal();
         updateSummarizerPromptContent();
         updateContextArchivesPromptContent();
         updateMacroCache();
     });
 
-    if (event_types.MESSAGE_RENDERED) {
-        eventSource.on(event_types.MESSAGE_RENDERED, () => updateBatchVisuals());
+    // In group chats ST changes the active responder for each generation. Rebuild
+    // here so hard card/tag restrictions are evaluated for that specific card.
+    if (event_types.GENERATION_STARTED) {
+        eventSource.on(event_types.GENERATION_STARTED, () => {
+            invalidateSummarizerPromptCache();
+            updateSummarizerPromptContent();
+        });
     }
 
-    eventSource.on(event_types.MESSAGE_DELETED, (messageIndex) => {
-        const batchSize = getSetting('batchSize');
-        const batchIdx = Math.floor(messageIndex / batchSize);
-        const startIndex = batchIdx * batchSize;
-        const endIndex = startIndex + batchSize - 1;
+    if (event_types.MESSAGE_RENDERED) {
+        eventSource.on(event_types.MESSAGE_RENDERED, () => scheduleBatchVisualUpdate());
+    }
 
-        const marked = markBatchRangeDirty(startIndex, endIndex);
+    const refreshChangedBatch = (messageIndex, indexesShifted = false) => {
+        const index = Number.parseInt(messageIndex, 10);
+        if (!Number.isInteger(index) || index < 0) return;
+        const marked = indexesShifted
+            ? markBatchesDirtyFrom(index)
+            : markBatchRangeDirty(index, index);
         if (marked > 0) {
             invalidateSummarizerPromptCache();
-            updateBatchVisuals();
+            scheduleBatchVisualUpdate();
         }
         updateSummarizerPromptContent();
-    });
+    };
+
+    const contentChangeEvents = new Set([
+        event_types.MESSAGE_EDITED,
+        event_types.MESSAGE_UPDATED,
+        event_types.MESSAGE_SWIPED,
+    ].filter(Boolean));
+    for (const eventName of contentChangeEvents) {
+        eventSource.on(eventName, messageIndex => refreshChangedBatch(messageIndex, false));
+    }
+    if (event_types.MESSAGE_DELETED) {
+        eventSource.on(event_types.MESSAGE_DELETED, messageIndex => refreshChangedBatch(messageIndex, true));
+    }
 }
 
 // ============================================================
@@ -346,7 +357,7 @@ function registerSlashCommands() {
         name: 'summarizer-status',
         callback: async () => {
             const c = getContext();
-            const bs = getSetting('batchSize');
+            const bs = getBatchSize();
             const batches = getBatches();
             const comp = await getComprehensiveSummary();
             const status = {
@@ -373,25 +384,27 @@ async function registerMacros() {
 
         MacroRegistry.registerMacro('comprehensive_summary', {
             category: MacroCategory.MISC,
-            description: 'Returns the comprehensive summary text for the current chat.',
-            returns: 'The comprehensive summary text, or empty string',
+            description: 'Returns the prompt-safe common-memory story backbone for the current chat.',
+            returns: 'The current story backbone, or empty string',
             returnType: MacroValueType.STRING,
             exampleUsage: ['{{comprehensive_summary}}'],
-            handler: () => (!isEnabled() || !cachedComprehensiveSummary) ? '' : (cachedComprehensiveSummary.text || ''),
+            handler: () => (!isEnabled() || !isComprehensiveContextCurrent(cachedComprehensiveSummary)) ? '' : (cachedComprehensiveSummary.contextText || ''),
         });
 
         MacroRegistry.registerMacro('comprehensive_summary_with_quotes', {
             category: MacroCategory.MISC,
-            description: 'Returns the comprehensive summary with memorable quotes.',
-            returns: 'Summary text followed by formatted quotes',
+            description: 'Returns the prompt-safe story backbone with pinned quotes from common memories.',
+            returns: 'Story backbone followed by safe pinned quotes',
             returnType: MacroValueType.STRING,
             exampleUsage: ['{{comprehensive_summary_with_quotes}}'],
             handler: () => {
-                if (!isEnabled() || !cachedComprehensiveSummary) return '';
-                let o = cachedComprehensiveSummary.text || '';
-                if (cachedComprehensiveSummary.quotes?.length > 0) {
+                if (!isEnabled() || !isComprehensiveContextCurrent(cachedComprehensiveSummary)) return '';
+                let o = cachedComprehensiveSummary.contextText || '';
+                const backboneIds = new Set(getBackboneBatches().map(batch => batch.id));
+                const safeQuotes = getPinnedQuotes().filter(quote => backboneIds.has(quote.batchId) && !quote.characterMemoryId);
+                if (safeQuotes.length > 0) {
                     o += '\n\nMemorable Quotes:\n';
-                    cachedComprehensiveSummary.quotes.forEach(q => {
+                    safeQuotes.forEach(q => {
                         o += `- ${q.speaker}: "${q.text}"`;
                         if (q.context) o += ` (${q.context})`;
                         o += '\n';
@@ -401,13 +414,22 @@ async function registerMacros() {
             },
         });
 
+        MacroRegistry.registerMacro('comprehensive_archive_summary', {
+            category: MacroCategory.MISC,
+            description: 'Returns the complete archival recap, including scoped memories. This is not prompt-safe.',
+            returns: 'The complete archival recap, or empty string',
+            returnType: MacroValueType.STRING,
+            exampleUsage: ['{{comprehensive_archive_summary}}'],
+            handler: () => (!isEnabled() || !isComprehensiveSummaryCurrent(cachedComprehensiveSummary)) ? '' : (cachedComprehensiveSummary.text || ''),
+        });
+
         MacroRegistry.registerMacro('batch_summaries', {
             category: MacroCategory.MISC,
             description: 'Returns all batch summaries that would be injected into context.',
             returns: 'Formatted batch summaries with labels and quotes',
             returnType: MacroValueType.STRING,
             exampleUsage: ['{{batch_summaries}}'],
-            handler: () => isEnabled() ? cachedBatchSummaries : '',
+            handler: () => isEnabled() ? buildPromptContent() : '',
         });
 
         MacroRegistry.registerMacro('batch_count', {

@@ -1,26 +1,46 @@
 /**
  * storage.js — Batch + comprehensive storage for Summarizer (standalone)
- * 
+ *
  * Batch summaries: chat_metadata.summarizer (ST-native, no change)
  * Comprehensive summaries: archive_summarizer.json via fileStore.js
- * 
+ *
  * Primary key is always chat filename.
  */
-import { chat_metadata, saveSettingsDebounced } from '../../../../../script.js';
+import { chat_metadata, saveSettingsDebounced, characters, this_chid } from '../../../../../script.js';
 import { extension_settings, saveMetadataDebounced, getContext } from '../../../../extensions.js';
 import { user_avatar } from '../../../../personas.js';
 import { power_user } from '../../../../power-user.js';
+import { tag_map } from '../../../../tags.js';
 import { getGroupInfo } from './utils.js';
+import {
+    getBatchMemoryPolicy,
+    getKeywordMatches,
+    isBackboneBatch,
+    normalizeKeywords,
+    normalizeKnowledge,
+    normalizeRestriction,
+    passesCharacterRestriction,
+    passesKeywordActivation,
+} from './memoryPolicy.js';
+import { normalizeCharacterMemories } from './characterMemories.js';
 import {
     getSummary,
     setSummary,
     updateSummary,
     deleteSummary,
+    flushStore,
 } from './fileStore.js';
 
 export const MODULE_NAME = 'summarizer';
 
 const logError = (...args) => console.error('[Summarizer]', ...args);
+const COMPREHENSIVE_CHANGED_EVENT = 'summarizer:comprehensive-changed';
+
+function notifyComprehensiveChanged() {
+    if (typeof globalThis.dispatchEvent === 'function' && typeof CustomEvent === 'function') {
+        globalThis.dispatchEvent(new CustomEvent(COMPREHENSIVE_CHANGED_EVENT));
+    }
+}
 
 /**
  * Verbose logging helper. Only prints when the `debug` setting is enabled,
@@ -71,6 +91,13 @@ export const default_settings = {
     // Context looking back for batch generation
     lookBackBatches: 2,
 
+    // Smart-memory defaults. These are copied onto newly created batches;
+    // changing them never rewrites existing batch metadata.
+    autoTagKeywords: false,
+    autoCharacterMemories: true,
+    keywordActivatedByDefault: false,
+    enableCharacterRestrictions: true,
+
     // Prompt injection (placement is hardcoded in promptInjection.js)
     prompt: {
         includeInPrompts: true,
@@ -80,9 +107,9 @@ export const default_settings = {
 /**
  * Calculate dynamic comprehensive summary length based on story size
  */
-export function getDynamicComprehensiveLength() {
+export function getDynamicComprehensiveLength(batchCountOverride = null) {
     const batches = getBatches().filter(b => !b.dirty && b.summary);
-    const batchCount = batches.length;
+    const batchCount = Number.isInteger(batchCountOverride) ? batchCountOverride : batches.length;
 
     if (batchCount < 10) return '8-12 sentences';
     if (batchCount <= 20) return '12-18 sentences';
@@ -242,29 +269,48 @@ function initChatMetadata() {
     // Guard: don't write metadata if no chat is loaded yet
     if (!chat_metadata || !getContext()?.chatId) return;
 
+    let changed = false;
     if (!chat_metadata[MODULE_NAME]) {
         chat_metadata[MODULE_NAME] = {
             enabled: true,
             batches: [],
+            batchSize: getSetting('batchSize'),
             comprehensive: null,
             rotationOffset: 0,
             contextArchives: {
                 assigned: [],
                 enabled: true,
+                includeQuotes: false,
             },
         };
-        saveMetadataDebounced();
+        changed = true;
     }
     if (chat_metadata[MODULE_NAME].rotationOffset === undefined) {
         chat_metadata[MODULE_NAME].rotationOffset = 0;
+        changed = true;
     }
     // Backfill contextArchives for chats created before this feature
     if (!chat_metadata[MODULE_NAME].contextArchives) {
         chat_metadata[MODULE_NAME].contextArchives = {
             assigned: [],
             enabled: true,
+            includeQuotes: false,
         };
+        changed = true;
     }
+    if (!Number.isInteger(chat_metadata[MODULE_NAME].batchSize)) {
+        const counts = new Map();
+        for (const batch of chat_metadata[MODULE_NAME].batches || []) {
+            if (batch?.type === 'history') continue;
+            const size = Number(batch?.endIndex) - Number(batch?.startIndex) + 1;
+            if (!Number.isInteger(size) || size < 1 || size > 20) continue;
+            counts.set(size, (counts.get(size) || 0) + 1);
+        }
+        const inferred = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+        chat_metadata[MODULE_NAME].batchSize = inferred || getSetting('batchSize');
+        changed = true;
+    }
+    if (changed) saveMetadataDebounced();
 }
 
 export function getChatMetadata() {
@@ -301,6 +347,29 @@ export function getBatches() {
     return chat_metadata[MODULE_NAME].batches || [];
 }
 
+/** Batch size is stored per chat so changing the global default cannot overlap old ranges. */
+export function getBatchSize() {
+    const fallback = Math.max(1, Math.min(20, Number.parseInt(getSetting('batchSize'), 10) || 6));
+    if (!chat_metadata || !getContext()?.chatId) return fallback;
+    initChatMetadata();
+    return Math.max(1, Math.min(20, Number.parseInt(chat_metadata[MODULE_NAME].batchSize, 10) || fallback));
+}
+
+export function setBatchSize(size, { clearExisting = false } = {}) {
+    const normalized = Math.max(1, Math.min(20, Number.parseInt(size, 10) || 6));
+    setSetting('batchSize', normalized);
+    if (!chat_metadata || !getContext()?.chatId) return normalized;
+    initChatMetadata();
+    const meta = chat_metadata[MODULE_NAME];
+    meta.batchSize = normalized;
+    if (clearExisting) {
+        meta.batches = [];
+        meta.rotationOffset = 0;
+    }
+    saveMetadataDebounced();
+    return normalized;
+}
+
 export function getBatch(batchId) {
     return getBatches().find(b => b.id === batchId);
 }
@@ -309,7 +378,12 @@ export function addBatch(batch) {
     initChatMetadata();
     const batches = chat_metadata[MODULE_NAME].batches;
 
-    if (!batch.id) batch.id = `batch_${batches.length}`;
+    if (!batch.id) {
+        const usedIds = new Set(batches.map(item => String(item.id)));
+        let nextId = 0;
+        while (usedIds.has(`batch_${nextId}`)) nextId++;
+        batch.id = `batch_${nextId}`;
+    }
 
     const newBatch = {
         id: batch.id,
@@ -324,6 +398,20 @@ export function addBatch(batch) {
         // as null (not 5) so we can tell "unscored" from "genuinely scored 5",
         // e.g. to surface a regen hint in the UI later.
         importance: (typeof batch.importance === 'number') ? batch.importance : null,
+        importanceManual: batch.importanceManual === true,
+        keywords: normalizeKeywords(batch.keywords),
+        keywordsManuallyEdited: batch.keywordsManuallyEdited === true,
+        characterMemories: normalizeCharacterMemories(batch.characterMemories),
+        characterMemoriesManuallyEdited: batch.characterMemoriesManuallyEdited === true,
+        keywordActivated: typeof batch.keywordActivated === 'boolean'
+            ? batch.keywordActivated
+            : getSetting('keywordActivatedByDefault') === true,
+        // True only after a person deliberately changes keyword recall in the
+        // batch editor. Automatic/default flags remain subject to the low-
+        // importance safety gate in memoryPolicy.js.
+        keywordActivationManual: batch.keywordActivationManual === true,
+        knowledge: normalizeKnowledge(batch.knowledge),
+        restriction: normalizeRestriction(batch.restriction),
         edited: batch.edited || false,
         dirty: batch.dirty || false,
         generatedAt: batch.generatedAt || Date.now(),
@@ -343,7 +431,11 @@ export function updateBatch(batchId, updates) {
         logError(`Batch ${batchId} not found`);
         return null;
     }
-    batches[index] = { ...batches[index], ...updates };
+    const normalizedUpdates = { ...updates };
+    if (Object.prototype.hasOwnProperty.call(normalizedUpdates, 'characterMemories')) {
+        normalizedUpdates.characterMemories = normalizeCharacterMemories(normalizedUpdates.characterMemories);
+    }
+    batches[index] = { ...batches[index], ...normalizedUpdates };
     saveMetadataDebounced();
     return batches[index];
 }
@@ -372,11 +464,26 @@ export function markBatchRangeDirty(startIndex, endIndex) {
     const batches = getBatches();
     let marked = 0;
     batches.forEach(batch => {
-        if (batch.endIndex >= startIndex && batch.startIndex <= endIndex) {
-            markBatchDirty(batch.id);
+        if (!batch.dirty && batch.endIndex >= startIndex && batch.startIndex <= endIndex) {
+            batch.dirty = true;
             marked++;
         }
     });
+    if (marked > 0) saveMetadataDebounced();
+    return marked;
+}
+
+/** Deletion shifts every later message index, so all following batches must be rebuilt. */
+export function markBatchesDirtyFrom(messageIndex) {
+    const batches = getBatches();
+    let marked = 0;
+    for (const batch of batches) {
+        if (!batch.dirty && batch.endIndex >= messageIndex) {
+            batch.dirty = true;
+            marked++;
+        }
+    }
+    if (marked > 0) saveMetadataDebounced();
     return marked;
 }
 
@@ -387,12 +494,27 @@ export function markBatchRangeDirty(startIndex, endIndex) {
 /**
  * Toggle the pinned state of a quote within a batch.
  * @param {string} batchId - The batch containing the quote
- * @param {number} quoteIndex - Index of the quote in the batch's quotes array
+ * @param {number} quoteIndex - Index of the quote in its public or character-memory array
+ * @param {string|null} characterMemoryId - Character-memory owner for a private quote
  * @returns {boolean|null} New pinned state, or null if not found
  */
-export function toggleQuotePin(batchId, quoteIndex) {
+export function toggleQuotePin(batchId, quoteIndex, characterMemoryId = null) {
     const batch = getBatch(batchId);
-    if (!batch || !batch.quotes || quoteIndex < 0 || quoteIndex >= batch.quotes.length) return null;
+    if (!batch || quoteIndex < 0) return null;
+
+    if (characterMemoryId) {
+        const characterMemories = normalizeCharacterMemories(batch.characterMemories);
+        const memory = characterMemories.find(item => item.id === characterMemoryId);
+        if (!memory || quoteIndex >= memory.quotes.length) return null;
+        memory.quotes[quoteIndex].pinned = !memory.quotes[quoteIndex].pinned;
+        updateBatch(batchId, {
+            characterMemories,
+            characterMemoriesManuallyEdited: true,
+        });
+        return memory.quotes[quoteIndex].pinned;
+    }
+
+    if (!batch.quotes || quoteIndex >= batch.quotes.length) return null;
 
     const quote = batch.quotes[quoteIndex];
     quote.pinned = !quote.pinned;
@@ -402,16 +524,14 @@ export function toggleQuotePin(batchId, quoteIndex) {
 
 /**
  * Get all pinned quotes across all batches in the current chat.
- * Returns them with batch context for display and injection.
- * @returns {Array<{speaker: string, text: string, context: string, batchId: string, batchIndex: number, quoteIndex: number}>}
+ * Returns public and scoped quotes with enough ownership metadata to preserve delivery.
  */
 export function getPinnedQuotes() {
     const batches = getBatches();
     const pinned = [];
 
     batches.forEach((batch, batchIdx) => {
-        if (!batch.quotes) return;
-        batch.quotes.forEach((quote, quoteIdx) => {
+        (batch.quotes || []).forEach((quote, quoteIdx) => {
             if (quote.pinned) {
                 pinned.push({
                     speaker: quote.speaker,
@@ -421,15 +541,36 @@ export function getPinnedQuotes() {
                     batchIndex: batchIdx,
                     quoteIndex: quoteIdx,
                     startIndex: batch.startIndex ?? 0,
+                    characterMemoryId: null,
                 });
             }
+        });
+
+        normalizeCharacterMemories(batch.characterMemories).forEach((memory, memoryIdx) => {
+            memory.quotes.forEach((quote, quoteIdx) => {
+                if (!quote.pinned) return;
+                pinned.push({
+                    speaker: quote.speaker,
+                    text: quote.text,
+                    context: quote.context || '',
+                    batchId: batch.id,
+                    batchIndex: batchIdx,
+                    quoteIndex: quoteIdx,
+                    startIndex: batch.startIndex ?? 0,
+                    characterMemoryId: memory.id,
+                    characterMemoryIndex: memoryIdx,
+                    characterMemory: memory,
+                });
+            });
         });
     });
 
     // Keep pinned quotes in chronological order even if the batches array
     // isn't strictly ordered (e.g. after regeneration). Sort by the batch's
     // message start index, then by quote position within the batch.
-    pinned.sort((a, b) => a.startIndex - b.startIndex || a.quoteIndex - b.quoteIndex);
+    pinned.sort((a, b) => a.startIndex - b.startIndex
+        || (a.characterMemoryIndex ?? -1) - (b.characterMemoryIndex ?? -1)
+        || a.quoteIndex - b.quoteIndex);
 
     return pinned;
 }
@@ -458,11 +599,16 @@ export async function getComprehensiveSummary() {
 
         return {
             text: data.text || '',
+            contextText: data.contextText || (data.memoryPolicyVersion ? '' : (data.text || '')),
             quotes: data.quotes || [],
             metadata: data.metadata || null,
             lastGenerated: data.lastGenerated || Date.now(),
             edited: data.edited || false,
             basedOnBatches: data.basedOnBatches || [],
+            basedOnBackboneBatches: data.basedOnBackboneBatches || [],
+            backboneSignature: data.backboneSignature || '',
+            archiveSignature: data.archiveSignature || '',
+            memoryPolicyVersion: data.memoryPolicyVersion || 0,
         };
     } catch (error) {
         logError('Failed to load comprehensive summary:', error);
@@ -485,15 +631,22 @@ export async function setComprehensiveSummary(summaryData) {
 
     const summaryObject = {
         text: summaryText,
+        contextText: typeof summaryData === 'object' ? (summaryData.contextText || '') : summaryText,
         quotes,
         metadata: summaryData.metadata || null,
         lastGenerated: Date.now(),
         edited: false,
-        basedOnBatches: getBatches().map(b => b.id),
+        basedOnBatches: summaryData.basedOnBatches || getBatches().filter(b => !b.dirty && b.summary).map(b => b.id),
+        basedOnBackboneBatches: summaryData.basedOnBackboneBatches || getBackboneBatches().map(b => b.id),
+        backboneSignature: summaryData.backboneSignature || getComprehensiveBackboneSignature(),
+        archiveSignature: summaryData.archiveSignature || getComprehensiveArchiveSignature(),
+        memoryPolicyVersion: 1,
     };
 
     try {
         await setSummary(chatFilename, summaryObject);
+        await flushStore();
+        notifyComprehensiveChanged();
         return summaryObject;
     } catch (error) {
         logError('Failed to save comprehensive summary:', error);
@@ -509,6 +662,8 @@ export async function updateComprehensiveSummary(updates) {
 
     try {
         const result = await updateSummary(chatFilename, updates);
+        if (result) await flushStore();
+        if (result) notifyComprehensiveChanged();
         return result;
     } catch (error) {
         logError('Failed to update comprehensive summary:', error);
@@ -523,6 +678,8 @@ export async function clearComprehensiveSummary() {
     const chatFilename = getCurrentChatFilename();
     try {
         await deleteSummary(chatFilename);
+        await flushStore();
+        notifyComprehensiveChanged();
     } catch (error) {
         logError('Failed to clear comprehensive summary:', error);
     }
@@ -536,8 +693,14 @@ export function fullReset() {
     chat_metadata[MODULE_NAME] = {
         enabled: true,
         batches: [],
+        batchSize: getBatchSize(),
         comprehensive: null,
         rotationOffset: 0,
+        contextArchives: {
+            assigned: [],
+            enabled: true,
+            includeQuotes: false,
+        },
     };
     saveMetadataDebounced();
 
@@ -551,7 +714,7 @@ export function fullReset() {
 
 export function getUnprocessedBatches(chatLength) {
     const batches = getBatches();
-    const batchSize = getSetting('batchSize');
+    const batchSize = getBatchSize();
     const completeBatches = Math.floor(chatLength / batchSize);
     const unprocessed = [];
 
@@ -573,13 +736,6 @@ export function getUnprocessedBatches(chatLength) {
     return unprocessed;
 }
 
-export function incrementRotationOffset() {
-    initChatMetadata();
-    chat_metadata[MODULE_NAME].rotationOffset =
-        (chat_metadata[MODULE_NAME].rotationOffset || 0) + 1;
-    saveMetadataDebounced();
-}
-
 function getRotationOffset() {
     initChatMetadata();
     return chat_metadata[MODULE_NAME].rotationOffset || 0;
@@ -587,6 +743,105 @@ function getRotationOffset() {
 
 // Neutral importance for batches with no LLM score (pre-feature or garbled tag).
 const NEUTRAL_IMPORTANCE = 5;
+
+/** Resolve the current card audience, including ST tag IDs used by hard filters. */
+export function getCurrentMemoryAudience() {
+    const context = getContext();
+    const withTags = (character) => character?.avatar ? {
+        name: character.name || character.avatar,
+        avatar: character.avatar,
+        tags: Array.isArray(tag_map?.[character.avatar]) ? [...tag_map[character.avatar]] : [],
+    } : null;
+
+    const groupInfo = getGroupInfo();
+    if (groupInfo) {
+        const enabledAvatars = new Set(groupInfo.members.map(member => member.avatar));
+        const responderIndex = Number.parseInt(this_chid, 10);
+        const currentResponder = Number.isInteger(responderIndex) ? characters?.[responderIndex] : null;
+        if (currentResponder?.avatar && enabledAvatars.has(currentResponder.avatar)) {
+            const resolved = withTags(currentResponder);
+            return resolved ? [resolved] : [];
+        }
+        return groupInfo.members.map(member => {
+            const character = context.characters?.find(item => item.avatar === member.avatar) || member;
+            return withTags(character);
+        }).filter(Boolean);
+    }
+
+    const character = context.characters?.[context.characterId];
+    const resolved = withTags(character);
+    return resolved ? [resolved] : [];
+}
+
+export function getMemoryAudienceSignature() {
+    return getCurrentMemoryAudience()
+        .map(item => `${item.avatar}:${[...item.tags].sort().join(',')}`)
+        .sort()
+        .join('|');
+}
+
+export function isBatchEligible(batch, queryText = '', {
+    ignoreKeywordActivation = false,
+    audience = getCurrentMemoryAudience(),
+    restrictionsEnabled = getSetting('enableCharacterRestrictions') !== false,
+} = {}) {
+    if (!batch || batch.dirty || !batch.summary) return false;
+    const restrictionPasses = passesCharacterRestriction(
+        batch,
+        audience,
+        restrictionsEnabled,
+    );
+    if (!restrictionPasses) return false;
+    return ignoreKeywordActivation || passesKeywordActivation(batch, queryText);
+}
+
+export function getBackboneBatches() {
+    return getBatches()
+        .filter(batch => !batch.dirty && batch.summary && isBackboneBatch(batch))
+        .sort((a, b) => a.startIndex - b.startIndex);
+}
+
+function hashText(value) {
+    let hash = 5381;
+    const text = String(value ?? '');
+    for (let i = 0; i < text.length; i++) hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+    return (hash >>> 0).toString(36);
+}
+
+export function getComprehensiveBackboneSignature() {
+    const source = getBackboneBatches()
+        .map(batch => `${batch.id}:${batch.startIndex}:${batch.endIndex}:${batch.summary}`)
+        .join('\u241e');
+    return `v1:${hashText(source)}`;
+}
+
+export function getComprehensiveArchiveSignature() {
+    const source = getBatches()
+        .filter(batch => !batch.dirty && batch.summary)
+        .sort((a, b) => a.startIndex - b.startIndex)
+        .map(batch => `${batch.id}:${batch.startIndex}:${batch.endIndex}:${batch.summary}:${JSON.stringify(normalizeCharacterMemories(batch.characterMemories))}`)
+        .join('\u241e');
+    return `v1:${hashText(source)}`;
+}
+
+export function isComprehensiveContextCurrent(summary) {
+    if (!summary) return false;
+    if (summary.memoryPolicyVersion === 1) {
+        return summary.backboneSignature === getComprehensiveBackboneSignature();
+    }
+    return getBatches().every(isBackboneBatch);
+}
+
+export function isComprehensiveSummaryCurrent(summary) {
+    if (!summary) return false;
+    if (summary.memoryPolicyVersion === 1) {
+        return summary.backboneSignature === getComprehensiveBackboneSignature()
+            && summary.archiveSignature === getComprehensiveArchiveSignature();
+    }
+    // Legacy comprehensive summaries remain usable only while every batch has
+    // legacy/common behavior. Once a special policy exists they could leak it.
+    return getBatches().every(isBackboneBatch);
+}
 
 // Stopwords for the relevance signal — mirrors the RP-flavored stoplist Aether
 // uses, plus pronouns/fillers that add noise to token overlap. Kept local so
@@ -657,14 +912,20 @@ export function getBatchesToInject(chatLength, queryText = '') {
     const alwaysLast = getSetting('alwaysKeepLastNBatches');
 
     // Sort chronologically so "first N" / "last N" are actually earliest / latest
+    const audience = getCurrentMemoryAudience();
+    const restrictionsEnabled = getSetting('enableCharacterRestrictions') !== false;
     const validBatches = batches
-        .filter(b => !b.dirty && b.summary)
+        .filter(batch => isBatchEligible(batch, queryText, { audience, restrictionsEnabled }))
         .sort((a, b) => a.startIndex - b.startIndex);
 
     if (validBatches.length <= maxSummaries) return validBatches;
 
-    const firstN = validBatches.slice(0, Math.min(alwaysFirst, validBatches.length));
-    const lastN = validBatches.slice(-Math.min(alwaysLast, validBatches.length));
+    // Honor the hard context cap even when the two protected-window settings
+    // add up to more than it. Reserve recent memory first, then opening memory.
+    const lastCount = Math.min(alwaysLast, maxSummaries, validBatches.length);
+    const firstCount = Math.min(alwaysFirst, maxSummaries - lastCount, validBatches.length - lastCount);
+    const firstN = validBatches.slice(0, firstCount);
+    const lastN = lastCount > 0 ? validBatches.slice(-lastCount) : [];
     const remaining = maxSummaries - (firstN.length + lastN.length);
 
     if (remaining <= 0) return [...firstN, ...lastN];
@@ -683,26 +944,29 @@ export function getBatchesToInject(chatLength, queryText = '') {
     // tiebreaker: the original stride pattern decides order only when importance
     // and relevance are identical, preserving the "cycle over time" behavior for
     // flat/unremarkable stretches without ever overriding a real signal.
-    const offset = getRotationOffset();
+    // Chat length provides a stable, write-free rotation phase. The same scene
+    // always produces the same selection, while new messages naturally cycle ties.
+    const offset = getRotationOffset() + chatLength;
     const rel = _relevanceScores(queryText, middleBatches);
     const scored = middleBatches.map((batch, i) => {
         const imp = (typeof batch.importance === 'number') ? batch.importance : NEUTRAL_IMPORTANCE;
+        const policy = getBatchMemoryPolicy(batch);
+        const keywordMatches = policy.keywordActivated
+            ? getKeywordMatches(policy.keywords, queryText).length
+            : 0;
         // Deterministic rotation phase in [0,1): batches whose position aligns
         // with the current offset sort slightly earlier this pass, next pass a
         // different set does. Scaled tiny so it never outweighs imp/rel.
         const rotationTie = ((i + offset) % middleBatches.length) / middleBatches.length;
-        return { batch, imp, rel: rel[i], rotationTie, idx: i };
+        return { batch, imp, keywordMatches, rel: rel[i], rotationTie, idx: i };
     });
 
     scored.sort((a, b) =>
-        (b.imp - a.imp) ||               // 1. importance, high first
-        (b.rel - a.rel) ||               // 2. relevance to current scene
-        (a.rotationTie - b.rotationTie)  // 3. rotation stride, cycles the flat ones
+        (b.keywordMatches - a.keywordMatches) || // 1. actively triggered memories
+        (b.imp - a.imp) ||                       // 2. importance, high first
+        (b.rel - a.rel) ||                       // 3. relevance to current scene
+        (a.rotationTie - b.rotationTie)          // 4. rotation stride
     );
-
-    // Advance rotation so the next injection cycles the flat-signal batches,
-    // exactly as the old stride did.
-    incrementRotationOffset();
 
     const selected = scored.slice(0, remaining).map(s => s.batch);
     selected.sort((a, b) => a.startIndex - b.startIndex);  // re-chronologize for display
@@ -711,7 +975,7 @@ export function getBatchesToInject(chatLength, queryText = '') {
 
 export function getMessageExclusionCount(chatLength) {
     const mode = getSetting('messageExclusionMode');
-    const batchSize = getSetting('batchSize');
+    const batchSize = getBatchSize();
     const threshold = mode === 'batches'
         ? getSetting('messageExclusionBatches') * batchSize
         : getSetting('messageExclusionMessages');
@@ -742,15 +1006,4 @@ export function getMessageExclusionCount(chatLength) {
     const excludeCount = Math.min(coveredUpTo, maxExclude);
 
     return excludeCount;
-}
-
-export function shouldExcludeMessage(messageIndex, chatLength) {
-    const excludeCount = getMessageExclusionCount(chatLength);
-    if (excludeCount === 0) return false;
-    return messageIndex < excludeCount;
-}
-
-export function getMessageBatchIndex(messageIndex) {
-    const batchSize = getSetting('batchSize');
-    return Math.floor(messageIndex / batchSize);
 }

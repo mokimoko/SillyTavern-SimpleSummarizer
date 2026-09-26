@@ -14,7 +14,17 @@ import {
     getBatches,
     getBatchesToInject,
     getPinnedQuotes,
+    getBatch,
+    isBatchEligible,
+    getCurrentMemoryAudience,
+    getMemoryAudienceSignature,
 } from './storage.js';
+import { getBatchMemoryPolicy, KNOWLEDGE_MODES } from './memoryPolicy.js';
+import {
+    getCharacterMemoryKnowledge,
+    isCharacterMemoryEligible,
+    normalizeCharacterMemories,
+} from './characterMemories.js';
 import {
     buildContextArchivesContent,
     getPlacementConfig as getCAPlacement,
@@ -45,10 +55,14 @@ function getContentSignature() {
     const chat = context.chat;
     const batches = getBatches();
     const batchSig = batches.map(b => {
-        const pinnedCount = b.quotes?.filter(q => q.pinned)?.length || 0;
-        // importance participates: regenerating a batch to backfill its score
-        // must invalidate the cache so selection re-ranks.
-        return `${b.id}:${b.dirty}:${b.summary?.length || 0}:p${pinnedCount}:i${b.importance ?? 'x'}`;
+        const characterMemories = normalizeCharacterMemories(b.characterMemories);
+        const pinnedCount = (b.quotes?.filter(q => q.pinned)?.length || 0)
+            + characterMemories.reduce((count, memory) => count + memory.quotes.filter(q => q.pinned).length, 0);
+        const policy = getBatchMemoryPolicy(b);
+        const raw = `${b.id}:${b.dirty}:${b.summary || ''}:p${pinnedCount}:i${b.importance ?? 'x'}:${JSON.stringify(policy)}:${JSON.stringify(characterMemories)}`;
+        let hash = 5381;
+        for (let i = 0; i < raw.length; i++) hash = ((hash << 5) - hash + raw.charCodeAt(i)) | 0;
+        return (hash >>> 0).toString(36);
     }).join('|');
     // The relevance query is the recent scene; fold a cheap fingerprint of it in
     // so selection refreshes as the scene moves, not only when batches change.
@@ -57,7 +71,7 @@ function getContentSignature() {
     const q = getRecentSceneQuery();
     let querySig = 0;
     for (let i = 0; i < q.length; i++) querySig = ((querySig << 5) - querySig + q.charCodeAt(i)) | 0;
-    return `${chat?.length || 0}:${batchSig}:${getSetting('maxSummariesInContext')}:${getSetting('alwaysKeepFirstNBatches')}:${getSetting('alwaysKeepLastNBatches')}:q${querySig}`;
+    return `${chat?.length || 0}:${batchSig}:${getSetting('maxSummariesInContext')}:${getSetting('alwaysKeepFirstNBatches')}:${getSetting('alwaysKeepLastNBatches')}:${getSetting('enableCharacterRestrictions')}:a${getMemoryAudienceSignature()}:q${querySig}`;
 }
 
 /**
@@ -68,7 +82,7 @@ function getContentSignature() {
  * hidden-message handling loosely — is_system messages are skipped so ghosted
  * lines and narrator scaffolding don't skew the query.
  */
-function getRecentSceneQuery() {
+export function getRecentSceneQuery() {
     const context = getContext();
     const chat = context.chat;
     if (!chat?.length) return '';
@@ -84,7 +98,92 @@ function getRecentSceneQuery() {
 /**
  * Build the prompt content from batch summaries
  */
-function buildPromptContent() {
+function escapeXmlAttribute(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+function resolveKnowledgeNames(source) {
+    const context = getContext();
+    const knowledge = source?.mode ? source : getBatchMemoryPolicy(source).knowledge;
+    const names = [...knowledge.names];
+    for (const avatar of knowledge.characters) {
+        const stem = String(avatar).replace(/\.[^/.]+$/, '');
+        const character = context.characters?.find(item =>
+            item.avatar === avatar || String(item.avatar || '').replace(/\.[^/.]+$/, '') === stem,
+        );
+        names.push(character?.name || stem || avatar);
+    }
+    return [...new Set(names.map(name => String(name).trim()).filter(Boolean))];
+}
+
+function formatCharacterMemory(memory, label, quotes = memory.quotes || []) {
+    let text = `${label} — limited knowledge:\n${memory.text}`;
+    if (quotes.length > 0) {
+        text += '\n' + quotes.map(quote => {
+            let line = `  ${quote.speaker}: "${quote.text}"`;
+            if (quote.context?.trim()) line += ` (${quote.context})`;
+            return line;
+        }).join('\n');
+    }
+    return text;
+}
+
+function formatMemory(batch, label, quotes = batch.quotes || []) {
+    let text = `${label}:\n${batch.summary}`;
+    if (quotes.length > 0) {
+        text += '\n' + quotes.map(quote => {
+            let line = `  ${quote.speaker}: "${quote.text}"`;
+            if (quote.context?.trim()) line += ` (${quote.context})`;
+            return line;
+        }).join('\n');
+    }
+    return text;
+}
+
+function renderKnowledgeGroups(items) {
+    const common = [];
+    const narrator = [];
+    const selected = new Map();
+
+    for (const item of items) {
+        const knowledge = item.knowledge || getBatchMemoryPolicy(item.batch).knowledge;
+        if (knowledge.mode === KNOWLEDGE_MODES.NARRATOR) {
+            narrator.push(item.text);
+            continue;
+        }
+        if (knowledge.mode === KNOWLEDGE_MODES.SELECTED) {
+            const names = resolveKnowledgeNames(knowledge).sort((a, b) => a.localeCompare(b));
+            if (names.length === 0) {
+                narrator.push(item.text);
+                continue;
+            }
+            const key = names.join('\u241f');
+            if (!selected.has(key)) selected.set(key, { names, memories: [] });
+            selected.get(key).memories.push(item.text);
+            continue;
+        }
+        common.push(item.text);
+    }
+
+    const sections = [];
+    if (common.length > 0) {
+        sections.push(`<common_memories>\n${common.join('\n\n')}\n</common_memories>`);
+    }
+    if (narrator.length > 0) {
+        sections.push(`<narrator_only_memories>\nThese facts are known to the narrator, but characters must not act as though they know them unless the story establishes that knowledge.\n\n${narrator.join('\n\n')}\n</narrator_only_memories>`);
+    }
+    for (const { names, memories } of selected.values()) {
+        const list = names.join(', ');
+        sections.push(`<character_memories known_by="${escapeXmlAttribute(list)}">\nOnly ${list} may act as though they know these facts. The narrator may use them without revealing them improperly.\n\n${memories.join('\n\n')}\n</character_memories>`);
+    }
+    return sections.join('\n\n');
+}
+
+export function buildPromptContent() {
     if (!isEnabled()) return '';
 
     const context = getContext();
@@ -98,11 +197,29 @@ function buildPromptContent() {
     }
 
     // Relevance query = the current scene. getBatchesToInject ranks the middle
-    // pool by importance, then relevance to this, then rotation — and advances
-    // the rotation offset itself, so we no longer increment it here.
+    // pool by importance, then relevance to this, then a stable chat-length
+    // rotation so repeated renders do not mutate chat metadata.
     const queryText = getRecentSceneQuery();
     const batchesToInject = getBatchesToInject(chat.length, queryText);
-    if (batchesToInject.length === 0) {
+    const selectedIds = new Set(batchesToInject.map(batch => batch.id));
+    const audience = getCurrentMemoryAudience();
+    const restrictionsEnabled = getSetting('enableCharacterRestrictions') !== false;
+
+    // Pinning is an explicit always-recall override for keyword activation, but
+    // hard card/tag restrictions and knowledge instructions still apply.
+    const extraPinned = getPinnedQuotes().filter(quote => {
+        if (selectedIds.has(quote.batchId)) return false;
+        const source = getBatch(quote.batchId);
+        if (!source || !isBatchEligible(source, queryText, {
+            ignoreKeywordActivation: true,
+            audience,
+            restrictionsEnabled,
+        })) return false;
+        return !quote.characterMemory
+            || isCharacterMemoryEligible(quote.characterMemory, audience, restrictionsEnabled);
+    });
+
+    if (batchesToInject.length === 0 && extraPinned.length === 0) {
         lastContentSignature = sig;
         lastContentResult = '';
         return '';
@@ -130,7 +247,8 @@ function buildPromptContent() {
         return 'Long ago';
     };
 
-    const summaryLines = batchesToInject.map((batch) => {
+    const memoryItems = [];
+    for (const batch of batchesToInject) {
         let label;
         if (batch.type === 'establishment') {
             label = 'Story Opening';
@@ -138,33 +256,33 @@ function buildPromptContent() {
             label = whenPhrase(batch);
         }
 
-        let text = `${label}:\n${batch.summary}`;
-
-        if (batch.quotes?.length > 0) {
-            const quotesFormatted = batch.quotes.map(quote => {
-                let quoteLine = `  ${quote.speaker}: "${quote.text}"`;
-                if (quote.context?.trim()) quoteLine += ` (${quote.context})`;
-                return quoteLine;
-            }).join('\n');
-            text += '\n' + quotesFormatted;
+        memoryItems.push({ batch, text: formatMemory(batch, label) });
+        for (const memory of normalizeCharacterMemories(batch.characterMemories)) {
+            if (!isCharacterMemoryEligible(memory, audience, restrictionsEnabled)) continue;
+            memoryItems.push({
+                batch,
+                knowledge: getCharacterMemoryKnowledge(memory),
+                text: formatCharacterMemory(memory, label),
+            });
         }
-
-        return text;
-    });
-
-    // Collect pinned quotes across all batches
-    const pinnedQuotes = getPinnedQuotes();
-    let pinnedSection = '';
-    if (pinnedQuotes.length > 0) {
-        const pinnedLines = pinnedQuotes.map(q => {
-            let line = `  ${q.speaker}: "${q.text}"`;
-            if (q.context?.trim()) line += ` (${q.context})`;
-            return line;
-        }).join('\n');
-        pinnedSection = `\n\nKey Moments (user-pinned):\n${pinnedLines}`;
     }
 
-    const content = `<prior_events>\n${preamble}\n\n${summaryLines.join('\n\n')}${pinnedSection}\n</prior_events>`;
+    for (const quote of extraPinned) {
+        const batch = getBatch(quote.batchId);
+        if (!batch) continue;
+        let quoteLine = `Key Moment (user-pinned):\n  ${quote.speaker}: "${quote.text}"`;
+        if (quote.context?.trim()) quoteLine += ` (${quote.context})`;
+        memoryItems.push({
+            batch,
+            knowledge: quote.characterMemory
+                ? getCharacterMemoryKnowledge(quote.characterMemory)
+                : undefined,
+            text: quoteLine,
+        });
+    }
+
+    const groupedMemories = renderKnowledgeGroups(memoryItems);
+    const content = `<prior_events>\n${preamble}\n\n${groupedMemories}\n</prior_events>`;
 
     lastContentSignature = sig;
     lastContentResult = content;
@@ -208,8 +326,7 @@ export function cleanupSummarizerPrompt() {
 
     lastContentSignature = null;
     lastContentResult = null;
-    caCacheValid = false;
-    caContentCache = null;
+    caUpdateRevision++;
 }
 
 /**
@@ -244,8 +361,7 @@ export function refreshSummarizerPrompt() {
 // Context Archives injection
 // ============================================================
 
-let caContentCache = null;
-let caCacheValid = false;
+let caUpdateRevision = 0;
 
 /**
  * Apply the context archives prompt.
@@ -263,6 +379,7 @@ export function applyContextArchivesPrompt() {
  * Update context archives prompt content (async)
  */
 export async function updateContextArchivesPromptContent() {
+    const revision = ++caUpdateRevision;
     const placement = getCAPlacement();
     if (placement.includeInPrompts === false) {
         // Clear it
@@ -275,6 +392,7 @@ export async function updateContextArchivesPromptContent() {
 
     try {
         const content = await buildContextArchivesContent();
+        if (revision !== caUpdateRevision) return;
         const context = getContext();
 
         context.setExtensionPrompt(
@@ -294,16 +412,9 @@ export async function updateContextArchivesPromptContent() {
  * Clean up context archives prompt
  */
 export function cleanupContextArchivesPrompt() {
+    caUpdateRevision++;
     try {
         const context = getContext();
         context.setExtensionPrompt(CA_PROMPT_IDENTIFIER, '', 0, 0, false, 0);
     } catch { /* ignore */ }
-}
-
-/**
- * Invalidate context archives cache
- */
-export function invalidateContextArchivesCache() {
-    caCacheValid = false;
-    caContentCache = null;
 }

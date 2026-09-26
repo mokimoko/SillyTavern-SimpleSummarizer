@@ -6,6 +6,7 @@ import { generateQuietPrompt } from '../../../../../script.js';
 import { switchToProfileWithConfirmation, restoreProfileWithConfirmation, getGroupInfo } from './utils.js';
 import {
     getSetting,
+    getBatchSize,
     getBatches,
     getBatch,
     addBatch,
@@ -16,8 +17,18 @@ import {
     getDynamicComprehensiveLength,
     getCurrentChatMetadata,
     getPinnedQuotes,
+    getBackboneBatches,
+    getComprehensiveBackboneSignature,
+    getComprehensiveArchiveSignature,
     debugWarn,
 } from './storage.js';
+import { parseKeywordsBlock } from './memoryPolicy.js';
+import {
+    normalizeCharacterMemories,
+    parseCharacterMemoryBlocks,
+    parseQuoteLines,
+    resolveCharacterMemoryIdentities,
+} from './characterMemories.js';
 
 // Importance rubric shown to the model for the <importance> tag. Verbatim scale
 // anchors (Aether-style) so scoring is consistent batch to batch. Selection uses
@@ -30,6 +41,81 @@ const IMPORTANCE_INSTRUCTION = `Then rate how important this batch is to the ove
 - 7-8: milestones — reveals, betrayals, first times, fights, deaths, major turning points.
 - 9-10: story-defining events — moments the entire story pivots on.
 Output a single whole number from 1 to 10. Base it only on what actually happens in these messages.`;
+
+const KEYWORDS_INSTRUCTION = `Then provide 5-12 concise recall triggers inside a <keywords> block, one per line.
+
+These are retrieval triggers, not descriptive index tags. Choose exact words or short phrases that could naturally appear in a later roleplay message when someone recalls, repeats, compares, jokes about, confronts, or deals with the consequences of this scene. A trigger is useful only when seeing it later would make this batch relevant context.
+
+- Cover the scene's central subject or action plus a few distinctive anchors: a relationship behavior, object or substance, consequence, time-reference phrase, or specific physical/location detail when it meaningfully identifies the event.
+- Use vocabulary the characters or narration would actually use. Preserve relevant slang, sexual terms, violent terms, and profanity; do not sanitize them into vague euphemisms.
+- Matching uses whole words and phrases, not stemming. Include a few genuinely useful grammatical, colloquial, or tense variants as separate lines when later prose might use them differently (for example: "sleep around" / "sleeping around", or "betray" / "betrayed" / "betrayal").
+- Prefer 1-4 words. A frequently recurring character or place name by itself is usually too broad; combine it with the relevant action, object, body detail, or time anchor.
+- Avoid abstract or generic labels such as conversation, room, feeling, intimacy, conflict, said, or event. Do not select a word merely because it occurs in the text.
+- Do not try to cover every detail. Favor triggers with a clear causal or thematic connection to why this otherwise nonessential scene might matter later.`;
+
+function keywordPromptParts() {
+    if (getSetting('autoTagKeywords') !== true) return { format: '', instruction: '' };
+    return {
+        format: `\n<keywords>\nkeyword or phrase\nanother keyword or alias\n</keywords>\n`,
+        instruction: `\n${KEYWORDS_INSTRUCTION}\n`,
+    };
+}
+
+function characterMemoryPromptParts() {
+    if (getSetting('autoCharacterMemories') !== true) {
+        return {
+            format: '',
+            instruction: '',
+            summaryBoundary: '',
+            motiveInstruction: '- Why they do it, when the reason is clear from the messages.',
+            quoteInstruction: 'Also list up to 3 memorable lines of dialogue if any stand out. If none do, write none.',
+        };
+    }
+
+    const context = getContext();
+    const groupInfo = getGroupInfo();
+    const cardNames = groupInfo
+        ? groupInfo.members.map(member => member.name)
+        : [context.characters?.[context.characterId]?.name].filter(Boolean);
+    const participantNames = [...new Set([context.name1, ...cardNames].filter(Boolean))];
+
+    return {
+        summaryBoundary: `
+The <summary> and <character_memories> sections must complement each other, not duplicate each other. Before writing either section, separate the new information into:
+- Shared chronology: events, spoken information, and outcomes available to everyone present. Put these in <summary>.
+- Asymmetric knowledge: unspoken thoughts or feelings, private motives, mistaken beliefs, private communications, or observations available to only some characters. Put these only in <character_memories>.
+
+If you place information in a character memory, omit that information from the summary. The summary may retain a directly observable action or consequence needed for continuity, but must not repeat its private content, reason, or interpretation. For example, the summary may say that a character withdrew their hand, while their private realization that prompted it belongs only in their character memory.
+`,
+        motiveInstruction: '- Why they do it, when the reason is shared or publicly established. Put private motives and interpretations only in <character_memories>.',
+        quoteInstruction: 'Also list up to 3 shared or publicly heard memorable lines of dialogue if any stand out. Private lines belong only in the relevant character memory. If none do, write none.',
+        format: `
+<character_memories>
+<memory>
+<known_by>
+["Exact character name", ${JSON.stringify(context.name1 || 'Persona')}]
+</known_by>
+<text>A concise private fact, belief, reaction, or limited observation.</text>
+<quotes>
+Speaker: "A private memorable quote" (Brief context)
+</quotes>
+</memory>
+</character_memories>
+`,
+        instruction: `
+Then identify any knowledge that is genuinely asymmetric between characters. The known participants are: ${participantNames.join(', ') || 'use the names in the messages'}.
+- Keep the normal <summary> as the durable shared chronology of the scene, after removing the asymmetric details captured here.
+- Put only private facts, mistaken beliefs, subjective reactions, or clearly witness-limited information in <character_memories>.
+- Never restate a character memory's fact, interpretation, or private quote in <summary>. The two sections are one partitioned record, not two independent summaries.
+- Do not create a character memory merely because someone appeared in the scene, and do not infer secrecy without evidence.
+- Include every person who directly knows the fact, including ${context.name1 || 'the user persona'} when they heard, witnessed, or participated.
+- Use names exactly as supplied in the messages or participant list. Never invent card filenames, IDs, or tags.
+- Combine closely related facts with the same audience. Return no <memory> entries when knowledge is symmetrical.
+- Private memorable quotes belong inside that memory's <quotes> block and must not be repeated in the top-level <quotes> block.
+If there is no asymmetric knowledge, return exactly <character_memories>none</character_memories> for this section.
+`,
+    };
+}
 
 // Parse the <importance> tag leniently and NON-FATALLY. Returns an integer 1-10,
 // or null when nothing usable is present (caller then stores null = neutral).
@@ -45,6 +131,11 @@ export function parseImportance(rawText) {
     const n = parseInt(num[1], 10);
     if (!Number.isFinite(n)) return null;
     return Math.max(1, Math.min(10, n)); // clamp; 15 -> 10, 0 -> 1
+}
+
+/** Keywords are optional metadata; malformed or missing output never fails a batch. */
+export function parseKeywords(rawText) {
+    return parseKeywordsBlock(rawText);
 }
 
 /**
@@ -94,13 +185,13 @@ function buildQuoteAttribution(otherSpeakers, isGroup = false, charName = null) 
     if (isGroup) {
         // Group mode: all character speakers are equal participants
         if (otherSpeakers.length === 0) {
-            return `IMPORTANT: 
+            return `IMPORTANT:
 - Use each character's actual name for quote attribution
 - Use exactly "USER:" for the user's quotes
 - Do NOT use "CHARACTER:" — always use the character's actual name`;
         }
 
-        return `IMPORTANT: 
+        return `IMPORTANT:
 - The following characters participate in this group conversation: ${otherSpeakers.join(', ')}
 - Use each character's ACTUAL NAME for quote attribution (e.g. "${otherSpeakers[0]}: \\"quote text\\" (context)")
 - Use exactly "USER:" for the user's quotes
@@ -117,13 +208,13 @@ function buildQuoteAttribution(otherSpeakers, isGroup = false, charName = null) 
         : '';
 
     if (otherSpeakers.length === 0) {
-        return `IMPORTANT: 
+        return `IMPORTANT:
 - Attribute each quote to the character who ACTUALLY said it, using their name exactly as it appears in the story (e.g. Ren: "quote text" (context)).
 - The "${charName}" card may portray more than one named character. If different named characters speak, attribute each quote to the specific one who said it — do NOT merge them under a single name.${cardFallback}
 - Use exactly "USER:" for the user's quotes.`;
     }
 
-    return `IMPORTANT: 
+    return `IMPORTANT:
 - Attribute each quote to the character who ACTUALLY said it, using their name exactly as it appears in the story (e.g. ${otherSpeakers[0]}: "quote text" (context)).
 - The "${charName}" card may portray more than one named character, and these additional characters also appear: ${otherSpeakers.join(', ')}. Attribute each quote to the specific speaker who said it — do NOT merge different characters under one name.${cardFallback}
 - In the summary text, refer to each character by their actual name — do NOT fold them together.
@@ -142,8 +233,12 @@ function buildEstablishmentPrompt(messages, otherSpeakers = [], isGroup = false,
     }).join('\n\n');
 
     const quoteAttribution = buildQuoteAttribution(otherSpeakers, isGroup, charName);
+    const keywordParts = keywordPromptParts();
+    const characterMemoryParts = characterMemoryPromptParts();
 
     return `Summarize the opening messages of this roleplay. This is the first summary, so record the starting facts the rest of the story builds on.
+
+${characterMemoryParts.summaryBoundary}
 
 Cover, in plain language:
 - Where and when the story takes place.
@@ -154,7 +249,7 @@ Cover, in plain language:
 
 Only include what the messages actually establish. Write it as clear, factual prose in plain English. State each fact directly. Do not use figurative language, metaphors, or dramatic phrasing.
 
-Also list up to 3 memorable lines of dialogue if any stand out. If none do, write none.
+${characterMemoryParts.quoteInstruction}
 
 Length target: ${length}. If there is less to cover, write less.
 
@@ -167,16 +262,21 @@ Format your response EXACTLY as follows:
 Your summary text here
 </summary>
 
+${characterMemoryParts.format}
+
 <quotes>
 [Speaker name]: "Quote text" (Brief context)
 USER: "Another quote" (Brief context)
 </quotes>
 
 <importance>N</importance>
+${keywordParts.format}
 
 ${quoteAttribution}
 
 ${IMPORTANCE_INSTRUCTION}
+${keywordParts.instruction}
+${characterMemoryParts.instruction}
 
 If there are no memorable quotes, use:
 <quotes>
@@ -206,19 +306,23 @@ function buildBatchPrompt(messages, batchIndex, previousSummaries, otherSpeakers
     }
 
     const quoteAttribution = buildQuoteAttribution(otherSpeakers, isGroup, charName);
+    const keywordParts = keywordPromptParts();
+    const characterMemoryParts = characterMemoryPromptParts();
 
     return `Summarize what happens in this batch of messages from an ongoing roleplay.
+
+${characterMemoryParts.summaryBoundary}
 
 ${contextText}The context above has already been summarized. Only summarize the new messages below; do not repeat the context.
 
 Write a clear, factual account of what happens, in the order it happens. Include:
 - What each character says and does, and what results from it.
-- Why they do it, when the reason is clear from the messages.
+${characterMemoryParts.motiveInstruction}
 - Any important change: a decision, a revelation, a lie, a location change, a shift in how two characters treat each other, or a new fact about the world.
 
 State events plainly, in your own words, as connected prose. Write in the past tense. Do not use metaphors, imagery, or dramatic phrasing. Do not editorialize about what things mean — just report what happened and why. Leave out minor physical detail (clothing, scenery, small gestures) unless it affects the plot or a relationship.
 
-Also list up to 3 memorable lines of dialogue if any stand out. If none do, write none.
+${characterMemoryParts.quoteInstruction}
 
 Length target: ${length}. If little happens, write less.
 
@@ -231,16 +335,21 @@ Format your response EXACTLY as follows:
 Your summary of these NEW messages
 </summary>
 
+${characterMemoryParts.format}
+
 <quotes>
 [Speaker name]: "Quote text" (Brief context)
 USER: "Another quote" (Brief context)
 </quotes>
 
 <importance>N</importance>
+${keywordParts.format}
 
 ${quoteAttribution}
 
 ${IMPORTANCE_INSTRUCTION}
+${keywordParts.instruction}
+${characterMemoryParts.instruction}
 
 If there are no memorable quotes, use:
 <quotes>
@@ -251,11 +360,12 @@ none
 /**
  * Build the comprehensive summary prompt
  */
-function buildComprehensivePrompt(batches, firstMessages, trailingMessages, otherSpeakers = [], pinnedQuotes = [], isGroup = false, charName = null) {
-    const length = getDynamicComprehensiveLength();
+function buildComprehensivePrompt(batches, firstMessages, trailingMessages, otherSpeakers = [], pinnedQuotes = [], isGroup = false, charName = null, purpose = 'archive') {
+    const length = getDynamicComprehensiveLength(batches.length);
+    const isBackbone = purpose === 'backbone';
 
     let firstMessagesText = '';
-    if (firstMessages && firstMessages.length > 0) {
+    if (!isBackbone && firstMessages && firstMessages.length > 0) {
         firstMessagesText = 'OPENING MESSAGES (for context):\n';
         firstMessages.forEach((msg, i) => {
             const speaker = msg.is_user ? 'User' : msg.name || 'Character';
@@ -266,12 +376,22 @@ function buildComprehensivePrompt(batches, firstMessages, trailingMessages, othe
 
     let batchSummaries = batches.map((batch, i) => {
         const label = batch.type === 'establishment' ? '(SETUP)' : '';
-        return `Batch ${i + 1} ${label}:\n${batch.summary}`;
+        let text = `Batch ${i + 1} ${label}:\n${batch.summary}`;
+        if (!isBackbone) {
+            const characterMemories = normalizeCharacterMemories(batch.characterMemories);
+            if (characterMemories.length > 0) {
+                text += '\nCharacter-specific knowledge:';
+                for (const memory of characterMemories) {
+                    text += `\n- Known by ${memory.knownBy.names.join(', ')}: ${memory.text}`;
+                }
+            }
+        }
+        return text;
     }).join('\n\n');
 
     let allQuotes = [];
     const pinnedTextSet = new Set(pinnedQuotes.map(pq => `${pq.speaker}::${pq.text}`));
-    batches.forEach((batch, i) => {
+    if (!isBackbone) batches.forEach((batch, i) => {
         if (batch.quotes && batch.quotes.length > 0) {
             batch.quotes.forEach(quote => {
                 // Skip pinned quotes — they're shown separately in the PINNED QUOTES section
@@ -279,18 +399,29 @@ function buildComprehensivePrompt(batches, firstMessages, trailingMessages, othe
                 allQuotes.push({ ...quote, sourceBatch: i + 1 });
             });
         }
+        normalizeCharacterMemories(batch.characterMemories).forEach(memory => {
+            memory.quotes.forEach(quote => {
+                if (pinnedTextSet.has(`${quote.speaker}::${quote.text}`)) return;
+                allQuotes.push({
+                    ...quote,
+                    sourceBatch: i + 1,
+                    knowledgeLabel: memory.knownBy.names.join(', '),
+                });
+            });
+        });
     });
 
     let quotesSection = '';
     if (allQuotes.length > 0) {
         quotesSection = '\n\nALL MEMORABLE QUOTES FROM BATCHES:\n';
         allQuotes.forEach(q => {
-            quotesSection += `Batch ${q.sourceBatch} - ${q.speaker}: "${q.text}" (${q.context})\n`;
+            const knowledge = q.knowledgeLabel ? ` [known by ${q.knowledgeLabel}]` : '';
+            quotesSection += `Batch ${q.sourceBatch}${knowledge} - ${q.speaker}: "${q.text}" (${q.context})\n`;
         });
     }
 
     let trailingText = '';
-    if (trailingMessages && trailingMessages.length > 0) {
+    if (!isBackbone && trailingMessages && trailingMessages.length > 0) {
         trailingText = '\n\nRECENT MESSAGES (after last batch):\n';
         trailingMessages.forEach((msg) => {
             const speaker = msg.is_user ? 'User' : msg.name || 'Character';
@@ -304,7 +435,7 @@ function buildComprehensivePrompt(batches, firstMessages, trailingMessages, othe
     const autoPickCount = Math.max(0, 8 - pinnedQuotes.length);
 
     let pinnedQuotesSection = '';
-    if (pinnedQuotes.length > 0) {
+    if (!isBackbone && pinnedQuotes.length > 0) {
         pinnedQuotesSection = '\n\nPINNED QUOTES (user-selected — ALWAYS include these exactly as written):\n';
         pinnedQuotes.forEach(q => {
             pinnedQuotesSection += `${q.speaker}: "${q.text}"${q.context ? ` (${q.context})` : ''}\n`;
@@ -312,7 +443,9 @@ function buildComprehensivePrompt(batches, firstMessages, trailingMessages, othe
     }
 
     let quoteSelectionInstruction;
-    if (pinnedQuotes.length === 0) {
+    if (isBackbone) {
+        quoteSelectionInstruction = 'Do not select quotes for the story backbone. Return <quotes>none</quotes>.';
+    } else if (pinnedQuotes.length === 0) {
         quoteSelectionInstruction = `Select exactly 8 quotes (or fewer if there aren't 8 good ones available). Do not make up quotes - only use quotes from the batch quotes provided above.`;
     } else if (autoPickCount > 0) {
         quoteSelectionInstruction = `The user has pinned ${pinnedQuotes.length} quote(s) listed above — ALWAYS include those exactly as written. Then select up to ${autoPickCount} additional quotes from the batch quotes to reach a total of 8. Do not make up quotes.`;
@@ -320,7 +453,9 @@ function buildComprehensivePrompt(batches, firstMessages, trailingMessages, othe
         quoteSelectionInstruction = `The user has pinned ${pinnedQuotes.length} quote(s) listed above — include ALL of them exactly as written. Do not select any additional quotes. Do not make up quotes.`;
     }
 
-    return `Write a complete summary of this roleplay so far, using the batch summaries below. Someone should be able to read it and understand everything that has happened without reading the original.
+    return `${isBackbone
+        ? 'Write a compact, prompt-safe story backbone using only the common-memory batch summaries below. Do not invent or infer events outside these batches.'
+        : 'Write a complete archival summary of this roleplay using every batch summary below. Preserve explicit boundaries around private knowledge, mistaken beliefs, and limited observations; do not imply that every character knew them.'}
 
 Write in plain, factual prose organized into paragraphs, in chronological order from start to present. Cover:
 - The main events, in order, and how the story got from its start to where it is now.
@@ -330,7 +465,7 @@ Write in plain, factual prose organized into paragraphs, in chronological order 
 
 State everything plainly and directly. Do not use metaphors, imagery, or dramatic phrasing. When several batches describe one ongoing development, combine them and describe it once. Only use information from the batch summaries; if they contradict each other, use the later one.
 
-Length target: ${length} (longer stories get more detail). If there is less to cover, write less.
+Length target: ${length}. If there is less to cover, write less.
 
 ${firstMessagesText}BATCH SUMMARIES:
 ${batchSummaries}${quotesSection}${pinnedQuotesSection}${trailingText}
@@ -338,7 +473,7 @@ ${batchSummaries}${quotesSection}${pinnedQuotesSection}${trailingText}
 Format your response EXACTLY as follows:
 
 <summary>
-Your cohesive comprehensive summary here
+Your ${isBackbone ? 'prompt-safe story backbone' : 'complete archival summary'} here
 </summary>
 
 <quotes>
@@ -346,7 +481,7 @@ Your cohesive comprehensive summary here
 USER: "Another quote" (Brief context)
 </quotes>
 
-${quoteAttribution}
+${isBackbone ? '' : quoteAttribution}
 
 ${quoteSelectionInstruction}`;
 }
@@ -355,33 +490,11 @@ ${quoteSelectionInstruction}`;
  * Parse quotes from LLM response text
  */
 function parseQuotes(quotesText) {
-    const quotes = [];
-    if (!quotesText || quotesText.toLowerCase() === 'none') return quotes;
-
     const context = getContext();
     const groupInfo = getGroupInfo();
-
-    // In group mode, characterId is undefined — LLM should use actual names, not CHARACTER
     const charName = groupInfo ? null : (context.characters?.[context.characterId]?.name || 'Character');
     const userName = context.name1 || 'User';
-
-    const quoteLines = quotesText.split('\n').filter(line => line.trim());
-
-    for (const line of quoteLines) {
-        const match = line.match(/^(.+?):\s*[""\u201C](.+?)[""\u201D]\s*(?:\((.+?)\))?$/);
-        if (match) {
-            let speaker = match[1].trim();
-            if (speaker === 'CHARACTER' && charName) speaker = charName;
-            if (speaker === 'USER') speaker = userName;
-            quotes.push({
-                speaker,
-                text: match[2].trim(),
-                context: match[3] ? match[3].trim() : '',
-            });
-        }
-    }
-
-    return quotes;
+    return parseQuoteLines(quotesText, { userName, characterName: charName || 'Character' });
 }
 
 /**
@@ -460,16 +573,18 @@ export function preprocessAndSplit(rawText) {
         }
 
         // Quotes: prefer a closed block; fall back to open-to-EOF with a soft
-        // warning. The open fallback stops at <importance> when present (that tag
-        // now follows quotes), so a missing </quotes> doesn't swallow the score
-        // line into quote text. Importance itself is parsed separately, off raw.
+        // warning. Stop at either optional metadata tag so a missing </quotes>
+        // doesn't swallow importance or keywords into quote text.
         let quotesText = null;
         let warning = null;
-        const quotesClosed = text.match(/<quotes>([\s\S]*?)<\/quotes>/i);
+        // Scoped memories may contain their own <quotes>; remove that section
+        // before locating the batch's public quote block.
+        const publicText = text.replace(/<character_memories>[\s\S]*?<\/character_memories>/gi, '');
+        const quotesClosed = publicText.match(/<quotes>([\s\S]*?)<\/quotes>/i);
         if (quotesClosed) {
             quotesText = quotesClosed[1].trim();
         } else {
-            const quotesOpen = text.match(/<quotes>([\s\S]*?)(?:<importance>|$)/i);
+            const quotesOpen = publicText.match(/<quotes>([\s\S]*?)(?:<importance>|<keywords?>|$)/i);
             if (quotesOpen) {
                 quotesText = quotesOpen[1].trim();
                 warning = 'quotes-unterminated';
@@ -490,7 +605,7 @@ export function preprocessAndSplit(rawText) {
     // text (up to <quotes> or EOF) so a future review UI can show it.
     const summaryOpen = text.match(/<summary>([\s\S]*)/i);
     if (summaryOpen) {
-        const partial = summaryOpen[1].split(/<quotes>/i)[0].trim();
+        const partial = summaryOpen[1].split(/<character_memories>|<quotes>/i)[0].trim();
         throw new SummaryParseError('TRUNCATED',
             'Summary was cut off (likely hit the token limit). Increase Max Response Tokens and regenerate.',
             { raw, partial });
@@ -682,8 +797,41 @@ export async function generateBatchSummary(startIndex, endIndex, batchIndex, ski
     // parseResponse throws on a missing <summary>, but a missing <importance> must
     // never fail the batch — null here means "unscored", stored as neutral downstream.
     const importance = parseImportance(response);
+    const keywords = getSetting('autoTagKeywords') === true ? parseKeywords(response) : [];
+    const memoryBlocks = getSetting('autoCharacterMemories') === true
+        ? parseCharacterMemoryBlocks(response)
+        : [];
+    const candidateCards = groupInfo
+        ? groupInfo.members
+        : [context.characters?.[context.characterId]].filter(Boolean).map(character => ({
+            name: character.name,
+            avatar: character.avatar,
+        }));
+    const characterMemories = resolveCharacterMemoryIdentities(
+        memoryBlocks.map(block => ({
+            ...block,
+            quotes: parseQuoteLines(block.quotesText, {
+                userName: context.name1 || 'User',
+                characterName: charName || 'Character',
+            }),
+        })),
+        candidateCards,
+        context.name1 || '',
+    );
+    const privateQuoteKeys = new Set(characterMemories.flatMap(memory => memory.quotes)
+        .map(quote => `${quote.speaker.toLocaleLowerCase()}\u241f${quote.text.toLocaleLowerCase()}`));
+    const publicQuotes = parsed.quotes.filter(quote => !privateQuoteKeys.has(
+        `${quote.speaker.toLocaleLowerCase()}\u241f${quote.text.toLocaleLowerCase()}`,
+    ));
 
-    return { summary: parsed.summary, quotes: parsed.quotes, type: batchType, importance };
+    return {
+        summary: parsed.summary,
+        quotes: publicQuotes,
+        characterMemories,
+        type: batchType,
+        importance,
+        keywords,
+    };
 }
 
 /**
@@ -694,13 +842,29 @@ export async function processBatch(startIndex, endIndex, batchIndex, existingBat
         const result = await generateBatchSummary(startIndex, endIndex, batchIndex, skipProfileSwitch, explicitType);
 
         if (existingBatch) {
+            const preserveManualImportance = existingBatch.importanceManual === true;
+            const preserveManualKeywords = existingBatch.keywordsManuallyEdited === true;
+            const preserveManualCharacterMemories = existingBatch.characterMemoriesManuallyEdited === true;
             return updateBatch(existingBatch.id, {
                 summary: result.summary,
                 quotes: result.quotes || [],
                 type: result.type,
                 // null when unscored; regenerating an old batch backfills a real
                 // score here, which is the intended "regen over time" path.
-                importance: (typeof result.importance === 'number') ? result.importance : null,
+                importance: preserveManualImportance
+                    ? existingBatch.importance
+                    : ((typeof result.importance === 'number') ? result.importance : null),
+                importanceManual: preserveManualImportance,
+                keywords: preserveManualKeywords
+                    ? existingBatch.keywords
+                    : (getSetting('autoTagKeywords') === true ? result.keywords : (existingBatch.keywords || [])),
+                keywordsManuallyEdited: preserveManualKeywords,
+                characterMemories: preserveManualCharacterMemories
+                    ? existingBatch.characterMemories
+                    : (getSetting('autoCharacterMemories') === true
+                        ? result.characterMemories
+                        : (existingBatch.characterMemories || [])),
+                characterMemoriesManuallyEdited: preserveManualCharacterMemories,
                 dirty: false,
                 edited: false,
                 generatedAt: Date.now(),
@@ -712,6 +876,11 @@ export async function processBatch(startIndex, endIndex, batchIndex, existingBat
                 quotes: result.quotes || [],
                 type: result.type,
                 importance: (typeof result.importance === 'number') ? result.importance : null,
+                importanceManual: false,
+                keywords: result.keywords || [],
+                keywordsManuallyEdited: false,
+                characterMemories: result.characterMemories || [],
+                characterMemoriesManuallyEdited: false,
                 dirty: false,
                 edited: false,
                 generatedAt: Date.now(),
@@ -740,7 +909,7 @@ export async function processBatch(startIndex, endIndex, batchIndex, existingBat
 export async function processUnprocessedBatches(onProgress = null, skipProfileSwitch = false, effectiveChatLength = null) {
     const context = getContext();
     const chat = context.chat;
-    const batchSize = getSetting('batchSize');
+    const batchSize = getBatchSize();
     const batches = getBatches();
     const results = [];
 
@@ -795,25 +964,11 @@ export async function processUnprocessedBatches(onProgress = null, skipProfileSw
 export async function generateComprehensive(skipProfileSwitch = false) {
     const context = getContext();
     const chat = context.chat;
-    const batches = getBatches().filter(b => !b.dirty && b.summary);
+    const allBatches = getBatches().filter(b => !b.dirty && b.summary);
+    const batches = getBackboneBatches();
 
-    if (batches.length === 0) {
-        throw new Error('No batch summaries available to create comprehensive summary');
-    }
-
-    const firstMessages = chat
-        .slice(0, Math.min(2, chat.length))
-        .filter(msg => !msg.is_disabled && !isUserHidden(msg))
-        .map((msg, i) => ({ ...msg, index: i }));
-
-    const lastBatchEndIndex = batches[batches.length - 1].endIndex;
-    const trailingMessages = [];
-    if (lastBatchEndIndex < chat.length - 1) {
-        for (let i = lastBatchEndIndex + 1; i < chat.length; i++) {
-            if (!chat[i].is_disabled && !isUserHidden(chat[i])) {
-                trailingMessages.push({ ...chat[i], index: i });
-            }
-        }
+    if (allBatches.length === 0) {
+        throw new Error('No batch summaries available to create a comprehensive summary');
     }
 
     const groupInfo = getGroupInfo();
@@ -823,13 +978,27 @@ export async function generateComprehensive(skipProfileSwitch = false) {
 
     const pinnedQuotes = getPinnedQuotes();
 
-    const prompt = buildComprehensivePrompt(batches, firstMessages, trailingMessages, otherSpeakers, pinnedQuotes, isGroup, charName);
+    // Raw opening/trailing messages carry no memory policy. The backbone uses
+    // only eligible batch summaries so scoped facts cannot leak through a raw tail.
+    const prompt = buildComprehensivePrompt(allBatches, [], [], otherSpeakers, pinnedQuotes, isGroup, charName, 'archive');
     // Comprehensive summaries are the longest output (up to 24-32 sentences plus
     // 8 quotes for long stories). Give CMRS an explicit, generous token ceiling so
     // the response isn't silently truncated by the connection profile's default,
     // which would cut off the closing </summary> tag and cause a parse failure.
     const response = await callLLM(prompt, skipProfileSwitch, 8192);
     const parsed = parseResponse(response);
+    let contextText = '';
+    if (batches.length === allBatches.length) {
+        contextText = parsed.summary;
+    } else if (batches.length > 0) {
+        // Generate the prompt-facing text from a separate, restricted input so
+        // scoped memories cannot bleed into it through the model's attention.
+        const backboneIds = new Set(batches.map(batch => batch.id));
+        const backbonePinned = pinnedQuotes.filter(quote => backboneIds.has(quote.batchId) && !quote.characterMemoryId);
+        const backbonePrompt = buildComprehensivePrompt(batches, [], [], otherSpeakers, backbonePinned, isGroup, charName, 'backbone');
+        const backboneResponse = await callLLM(backbonePrompt, skipProfileSwitch, 8192);
+        contextText = parseResponse(backboneResponse).summary;
+    }
 
     // Normalize a quote string for fuzzy dedup — lowercase, collapse whitespace,
     // strip leading/trailing punctuation so minor LLM variations still match.
@@ -863,8 +1032,16 @@ export async function generateComprehensive(skipProfileSwitch = false) {
 
     return setComprehensiveSummary({
         text: parsed.summary,
+        contextText,
         quotes: finalQuotes,
-        metadata: getCurrentChatMetadata(),
+        metadata: {
+            ...getCurrentChatMetadata(),
+            excludedScopedMemories: Math.max(0, allBatches.length - batches.length),
+        },
+        basedOnBatches: allBatches.map(batch => batch.id),
+        basedOnBackboneBatches: batches.map(batch => batch.id),
+        backboneSignature: getComprehensiveBackboneSignature(),
+        archiveSignature: getComprehensiveArchiveSignature(),
     });
 }
 

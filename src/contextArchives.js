@@ -9,6 +9,7 @@ import { chat_metadata, chat, saveSettingsDebounced } from '../../../../../scrip
 import { extension_settings, getContext, saveMetadataDebounced } from '../../../../extensions.js';
 import { getStore, getSummary } from './fileStore.js';
 import { isEnabled, getBatches, MODULE_NAME, getSetting, getChatMetadata } from './storage.js';
+import { getPromptSafeArchiveText } from './memoryPolicy.js';
 
 // ============================================================
 // Default config
@@ -263,19 +264,23 @@ function estimateTokens(text) {
 // ============================================================
 
 function smartTruncate(text, maxChars) {
-    if (!text || text.length <= maxChars) return text;
+    const limit = Math.max(0, Math.floor(maxChars));
+    if (!text || text.length <= limit) return text;
+    if (limit === 0) return '';
+    if (limit <= 3) return text.substring(0, limit);
+    if (limit <= 12) return text.substring(0, limit - 3) + '...';
 
     const paragraphs = text.split(/\n\n+/).filter(p => p.trim());
 
     if (paragraphs.length <= 2) {
-        return text.substring(0, maxChars - 3) + '...';
+        return text.substring(0, limit - 3) + '...';
     }
 
     const first = paragraphs[0];
     const last = paragraphs[paragraphs.length - 1];
 
-    if (first.length + last.length + 10 > maxChars) {
-        const halfMax = Math.floor(maxChars / 2) - 10;
+    if (first.length + last.length + 10 > limit) {
+        const halfMax = Math.max(0, Math.floor(limit / 2) - 5);
         return first.substring(0, halfMax) + '\n\n[...]\n\n' + last.substring(last.length - halfMax);
     }
 
@@ -291,6 +296,7 @@ function smartTruncate(text, maxChars) {
  * Include summaries in order until budget exhausted.
  */
 function applyPriorityStrategy(summaries, maxTokens) {
+    if (maxTokens <= 0) return [];
     const result = [];
     let tokensUsed = 0;
 
@@ -317,7 +323,7 @@ function applyPriorityStrategy(summaries, maxTokens) {
  * Distribute budget evenly, truncate each to fit.
  */
 function applyBalancedStrategy(summaries, maxTokens) {
-    if (summaries.length === 0) return [];
+    if (summaries.length === 0 || maxTokens <= 0) return [];
 
     const perBudget = Math.floor(maxTokens / summaries.length);
     const perBudgetChars = perBudget * 4;
@@ -334,7 +340,7 @@ function applyBalancedStrategy(summaries, maxTokens) {
  * Score paragraphs by keyword overlap with current context.
  */
 function applyContextWeightedStrategy(summaries, maxTokens) {
-    if (summaries.length === 0) return [];
+    if (summaries.length === 0 || maxTokens <= 0) return [];
 
     // Extract keywords from current chat context
     const keywords = extractContextKeywords();
@@ -376,7 +382,16 @@ function applyContextWeightedStrategy(summaries, maxTokens) {
     const selected = [];
 
     for (const para of allParagraphs) {
-        if (tokensUsed + para.tokens > maxTokens && selected.length > 0) continue;
+        const remaining = maxTokens - tokensUsed;
+        if (remaining <= 0) break;
+        if (para.tokens > remaining) {
+            if (selected.length === 0) {
+                const text = smartTruncate(para.text, remaining * 4);
+                if (text) selected.push({ ...para, text, tokens: estimateTokens(text) });
+                break;
+            }
+            continue;
+        }
         selected.push(para);
         tokensUsed += para.tokens;
         if (tokensUsed >= maxTokens) break;
@@ -424,7 +439,10 @@ function extractContextKeywords() {
     }
 
     // Current batch summaries
-    const batches = getBatches().filter(b => !b.dirty && b.summary);
+    const batches = getBatches()
+        .filter(b => !b.dirty && b.summary)
+        .sort((a, b) => a.startIndex - b.startIndex)
+        .slice(-50);
     for (const batch of batches) {
         textParts.push(batch.summary);
     }
@@ -497,13 +515,18 @@ export async function buildContextArchivesContent() {
     const summaries = [];
     for (const assignment of ca.assigned) {
         const entry = await getSummary(assignment.chatFilename);
-        if (!entry?.text) continue;
+        const safeText = getPromptSafeArchiveText(entry);
+        if (!safeText) continue;
 
         summaries.push({
             chatFilename: assignment.chatFilename,
             label: assignment.label,
-            text: entry.text,
-            quotes: Array.isArray(entry.quotes) ? entry.quotes : [],
+            text: safeText,
+            // New smart-memory archives do not flatten scoped quote knowledge.
+            // Legacy summaries keep their historical quote behavior.
+            quotes: Number(entry.memoryPolicyVersion) >= 1
+                ? []
+                : (Array.isArray(entry.quotes) ? entry.quotes : []),
         });
     }
 

@@ -1,9 +1,9 @@
 /**
  * fileStore.js — Simplified file storage for Summarizer
- * 
+ *
  * Single file: user/files/archive_summarizer.json
  * Keyed by chat filename. Debounced saves + unload flush.
- * 
+ *
  * Combines file-api.js + file-backed-data.js into one module.
  */
 import { getRequestHeaders } from '../../../../../script.js';
@@ -18,29 +18,38 @@ const DEBOUNCE_MS = 2000;
 // In-memory cache
 let cache = null;
 let loaded = false;
+let loadPromise = null;
 
 // Debounce state
 let saveTimer = null;
 let pendingData = null;
+let saveInFlight = null;
 let unloadRegistered = false;
 
 // ============================================================
 // File API helpers
 // ============================================================
 
-async function uploadJSON(data) {
-    const json = JSON.stringify(data, null, 2);
-    const bytes = new TextEncoder().encode(json);
-    let binary = '';
-    for (let i = 0; i < bytes.length; i++) {
-        binary += String.fromCharCode(bytes[i]);
+function encodeBase64Utf8(value) {
+    const bytes = new TextEncoder().encode(value);
+    const chunks = [];
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+        chunks.push(String.fromCharCode(...bytes.subarray(i, i + chunkSize)));
     }
-    const base64 = btoa(binary);
+    return btoa(chunks.join(''));
+}
 
+function buildUploadPayload(data) {
+    const json = JSON.stringify(data, null, 2);
+    return JSON.stringify({ name: FILENAME, data: encodeBase64Utf8(json) });
+}
+
+async function uploadJSON(data) {
     const response = await fetch('/api/files/upload', {
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ name: FILENAME, data: base64 }),
+        body: buildUploadPayload(data),
     });
 
     if (!response.ok) {
@@ -71,55 +80,77 @@ async function downloadJSON() {
 // Debounced persistence
 // ============================================================
 
+async function persistPending() {
+    if (saveInFlight) {
+        await saveInFlight;
+        if (pendingData) await persistPending();
+        return;
+    }
+
+    const drain = (async () => {
+        while (pendingData) {
+            const data = pendingData;
+            pendingData = null;
+            try {
+                await uploadJSON(data);
+            } catch (e) {
+                if (!pendingData) pendingData = data;
+                throw e;
+            }
+        }
+    })();
+    saveInFlight = drain;
+
+    try {
+        await drain;
+    } finally {
+        if (saveInFlight === drain) saveInFlight = null;
+    }
+
+    if (pendingData) await persistPending();
+}
+
 function scheduleSave(data) {
     if (saveTimer) clearTimeout(saveTimer);
 
     pendingData = data;
 
-    saveTimer = setTimeout(async () => {
-        try {
-            await uploadJSON(data);
-            pendingData = null;
-            saveTimer = null;
-        } catch (e) {
+    saveTimer = setTimeout(() => {
+        saveTimer = null;
+        persistPending().catch(e => {
             logError('Debounced save failed:', e.message);
-            // Keep pendingData for flush attempt
-            saveTimer = null;
-        }
+        });
     }, DEBOUNCE_MS);
 }
 
 async function saveImmediate(data) {
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = null;
-    pendingData = null;
-    await uploadJSON(data);
+    pendingData = data;
+    await persistPending();
 }
 
 function flushOnUnload() {
     if (!pendingData) return;
 
     try {
-        const json = JSON.stringify(pendingData, null, 2);
-        const bytes = new TextEncoder().encode(json);
-        let binary = '';
-        for (let i = 0; i < bytes.length; i++) {
-            binary += String.fromCharCode(bytes[i]);
-        }
-        const base64 = btoa(binary);
-        const payload = JSON.stringify({ name: FILENAME, data: base64 });
+        const payload = buildUploadPayload(pendingData);
 
         if (payload.length < 64000) {
-            navigator.sendBeacon(
+            const accepted = navigator.sendBeacon(
                 '/api/files/upload',
                 new Blob([payload], { type: 'application/json' }),
             );
+            if (accepted) pendingData = null;
         }
     } catch (e) {
         logError('Unload save failed:', e);
     }
+}
 
-    pendingData = null;
+function flushWhenHidden() {
+    if (document.visibilityState !== 'hidden' || !pendingData) return;
+    flushStore().catch(e => logError('Background save failed:', e.message));
 }
 
 // ============================================================
@@ -143,6 +174,7 @@ function createEmptyStore() {
 export function initFileStore() {
     if (!unloadRegistered) {
         window.addEventListener('beforeunload', flushOnUnload);
+        document.addEventListener('visibilitychange', flushWhenHidden);
         unloadRegistered = true;
     }
 }
@@ -152,17 +184,24 @@ export function initFileStore() {
  */
 export async function getStore() {
     if (loaded && cache) return cache;
+    if (loadPromise) return loadPromise;
 
-    try {
-        const data = await downloadJSON();
-        cache = data || createEmptyStore();
-    } catch (e) {
-        logError('Failed to load store:', e.message);
-        cache = createEmptyStore();
-    }
-
-    loaded = true;
-    return cache;
+    loadPromise = (async () => {
+        try {
+            const data = await downloadJSON();
+            cache = data || createEmptyStore();
+            loaded = true;
+            return cache;
+        } catch (e) {
+            logError('Failed to load store:', e.message);
+            cache = null;
+            loaded = false;
+            throw e;
+        } finally {
+            loadPromise = null;
+        }
+    })();
+    return loadPromise;
 }
 
 /**
@@ -214,6 +253,9 @@ export async function deleteSummary(chatFilename) {
  */
 export async function flushStore() {
     if (cache) {
+        if (saveTimer) clearTimeout(saveTimer);
+        saveTimer = null;
+        pendingData = cache;
         await saveImmediate(cache);
     }
 }
@@ -224,4 +266,5 @@ export async function flushStore() {
 export function invalidateCache() {
     cache = null;
     loaded = false;
+    loadPromise = null;
 }

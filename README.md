@@ -1,78 +1,83 @@
 # SimpleSummarizer
 
-Long chats blow past your context window, and the model starts forgetting what happened fifty messages ago. SimpleSummarizer fixes that without you having to babysit it.
+SimpleSummarizer keeps long SillyTavern chats from forgetting earlier events.
 
-It chops your chat into batches, summarizes each one (with memorable quotes pulled out), and injects those summaries back into context so the model keeps its memory of older events. When the story gets really long, roll everything up into a single comprehensive summary, which you can access from a new, fresh chat.
+It groups messages into batches, summarizes them, and puts the useful parts back into context. You can let it run automatically or manage everything from the scroll icon in the wand menu.
 
 Enjoy :) -moki
 
----
+## Features
 
-## How It Works
+- Batch summaries with importance scores, recall keywords, and memorable quotes
+- Character memories for private knowledge or limited perspectives
+- Automatic processing after a batch is complete
+- A comprehensive recap for carrying a story into a fresh chat
+- Context Archives for bringing summaries from older chats into a new one
+- Optional message trimming to save context tokens
+- A separate connection profile for summary generation
 
-Messages are grouped into **batches** (default 6 messages each). Once a batch is complete, it gets summarized into a few factual sentences plus any standout quotes. Those summaries are injected into your prompt, while the original older messages are hidden from context, so the model remembers what happened without paying the full token cost.
-
-**Comprehensive summary** — Once you have a stack of batch summaries, condense them into one running overview of the whole story. Good for very long chats where even the batch summaries add up.
-
-**Auto mode** — Let it process new batches on its own as you play. It waits for streaming to finish and leaves the last couple of messages alone (they're still "active"), so it won't interrupt the scene.
-
-## The Modal
-
-Open it from the wand menu (the scroll icon) or `/summarizer-modal`. Five tabs:
-
-- **Batches** — View, edit, regenerate, or delete individual batch summaries. See which are processed and which need attention.
-- **Comprehensive** — View and edit the rolled-up summary, or regenerate it from the current batches.
-- **Pinned Quotes** — Pin the quotes you want kept around. Pinned quotes stick regardless of how summaries shuffle.
-- **Archives** — Pull comprehensive summaries from *other* chats into this one (see below).
-- **Settings** — Everything below.
+The main batch summary covers shared events. Character-only details stay in their character memories so the same information is not repeated in both places.
 
 ## Context Archives
 
-Assign comprehensive summaries from your previous chats to inject into the current one. Handy for ongoing storylines across multiple chats, or shared-world setups where past events should carry over. Set a token budget and pick an overflow strategy (priority, balanced, or context-weighted) for when your assigned archives exceed it.
+Comprehensive summaries contain a complete recap for reading and a prompt-safe backbone made from shared, unrestricted memories. Private or conditional memories stay separate.
 
-## Settings
+The Archives tab can bring comprehensive summaries from other chats into the current one. It supports a token budget with priority, balanced, or context-weighted trimming.
 
-In the Settings tab of the modal.
+## Smart Memory
 
-- **Batch Size** — How many messages per batch (default 6).
-- **Summary Lengths** — Target length for establishment, batch, and comprehensive summaries.
-- **Auto Mode & Buffer** — Toggle auto-processing and set how many recent messages to leave untouched.
-- **Message Exclusion** — How many older messages get hidden once summarized, by batch count or raw message count. Keep the first and last N batches visible.
-- **Connection Profile** — Use a separate API connection/preset for summarization, so you can run a cheap/fast model for summaries and your main model for roleplay.
-- **Display** — Show or hide summary markers in the chat.
+Each batch can have:
+
+- **Importance** — Higher-value events are more likely to stay in context.
+- **Recall keywords** — Optional memories can return when the current scene mentions a matching word or phrase.
+- **Character memories** — Facts, reactions, and quotes known only to certain characters.
+- **Card and tag rules** — Limit a memory to selected character cards or SillyTavern tags.
+
+Older batches still work and default to normal shared memory.
+
+## Settings Worth Checking
+
+- **Batch Size** — Messages per batch; 6 by default. Changing it after processing clears that chat's summaries so ranges cannot overlap.
+- **Auto-Process and Buffer** — Summarize completed batches while leaving the newest messages alone.
+- **Message Trimming** — Hide older messages only after summaries cover them.
+- **Connection Profile** — Let summaries use a cheaper or faster model.
+- **Show Summaries in Chat** — Show or hide batch markers.
 
 ## Macros
 
 Drop these into prompts, world info, or author's notes:
 
-- `{{comprehensive_summary}}` — The comprehensive summary text.
-- `{{comprehensive_summary_with_quotes}}` — Same, with memorable quotes appended.
-- `{{batch_summaries}}` — All batch summaries currently being injected.
-- `{{batch_count}}` — Number of processed batches.
+- `{{comprehensive_summary}}` — Prompt-safe story backbone
+- `{{comprehensive_summary_with_quotes}}` — Backbone plus pinned shared quotes
+- `{{comprehensive_archive_summary}}` — Complete recap, including scoped memories
+- `{{batch_summaries}}` — Currently eligible batch and character memories
+- `{{batch_count}}` — Number of processed batches
 
 ## Slash Commands
 
-- `/summarizer-modal` — Open the modal
-- `/summarizer-toggle` — Enable/disable for the current chat
-- `/summarizer-process` — Process all unprocessed batches
-- `/summarizer-comprehensive` — Generate the comprehensive summary
-- `/summarizer-view-comprehensive` — Open the modal on the Comprehensive tab
-- `/summarizer-status` — Print status (batch counts, processed/dirty, etc.)
-- `/summarizer-clear` — Clear all summaries for the current chat
+- `/summarizer-modal`
+- `/summarizer-toggle`
+- `/summarizer-process`
+- `/summarizer-comprehensive`
+- `/summarizer-view-comprehensive`
+- `/summarizer-status`
+- `/summarizer-clear`
 
 ## Installation
 
-Use SillyTavern's built-in extension installer:
+Open **Extensions → Install Extension** in SillyTavern and paste:
 
-1. Open **Extensions** → **Install Extension**
-2. Paste this URL:
-   ```
-   https://github.com/mokimoko/SillyTavern-SimpleSummarizer
-   ```
-3. Click **Install** and reload if prompted
+```
+https://github.com/mokimoko/SillyTavern-SimpleSummarizer
+```
 
-## Tips
+Reload SillyTavern if prompted.
 
-- Set a cheap, fast model as the connection profile. Summaries don't need your best model, and you'll save time and tokens.
-- Auto mode is off by default. Turn it on once you've confirmed your batch size and connection profile feel right.
-- Editing a message that's already summarized marks its batch dirty, so it'll re-process. Deleting messages does the same.
+## Notes
+
+- Auto mode is off by default.
+- Editing or swiping a summarized message marks its batch for rebuilding.
+- Deleting a message rebuilds that batch and every later batch because message indexes shift.
+- Full archive recaps are not prompt-safe; use the normal comprehensive-summary macro in prompts.
+
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
